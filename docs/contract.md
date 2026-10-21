@@ -38,7 +38,7 @@ Any file that is not valid JSON, not an object, or larger than 64 KB is refused 
 - `files` is the number of paths changed `previous..sha` (the commit's own change when `previous` is unknown; `null` when git could not say); `rules_changed` lists those among the repository's `rules`.
 - `approval`: `null` until decided; a decline sets `{ "decision": "declined", "by": {…}, "at": "…", "reason": "<word>" }`; an approval sets `{ "decision": "approved", "by": { "user", "ip", "via", "node" }, "at": "…", "janus": "allowed", "sig": "<the log line's sig>" }`.
 - `janus`: after an approval attempt, `{ "verdict": "allowed" | "refused" | "failed", "reasons": [...], "at", "user", "ip" }`. A refusal leaves the record `pending` with the reasons kept for the card; a failure makes it `held` (still in `queue/`, approvable again once Janus answers) and writes the alert file `~/.local/state/argus-ui/alerts/zeus.json` (`{ "message", "link": "throne", "at" }`).
-- `deploy`: `null` until approved; then `{ "started": true, "unit": "zeus-deploy-<id>", "at" }` or `{ "started": false, "error": "…", "at" }` when `systemd-run` refused (the approval stands and is logged; the alert file says so).
+- `deploy`: `null` until approved; then `{ "started": true, "unit": "zeus-deploy-<id>", "at" }` or `{ "started": false, "error": "…", "at" }` when `systemd-run` refused (the approval stands and is logged; the alert file says so). `zeus deploy-run` adds `run_started`, `log` (the run log's path), `finished`, `outcome` (`deployed` | `failed`) and `install_stage` (true once the script printed `ZEUS_STAGE=install`); a failure puts the plain-sentence reason in `reason`.
 
 ## 3. `zeus status --json` (what the Throne plugin reads)
 ```json
@@ -53,6 +53,16 @@ Any file that is not valid JSON, not an object, or larger than 64 KB is refused 
 - `line` is the one sentence for Elaia's Home page.
 - Listing applies expiry: a pending record past `expires` becomes `expired` on the spot (no timer).
 - The shape only grows: new keys may appear; existing keys keep their meaning.
+
+## 4a. What is live: `state/<owner>--<name>.json`
+Written by `zeus deploy-run` after a deploy passes its health check:
+```json
+{ "repo": "you/argus-ui",
+  "deployed": { "sha": "<40 hex>", "version": "4.9.1", "at": "…", "id": "<request id>", "approval": { "user", "ip", "via", "node" } },
+  "previous": { <the entry deployed before it, or null> },
+  "history": [ <earlier entries, newest first, 10 at most> ] }
+```
+`previous` is what a rollback (#9) puts back. Every deploy-run also appends one signed line to `log/deploys-YYYY-MM.jsonl`: `{ "t", "id", "repo", "sha", "version", "outcome", "reason", "install_stage", "zeus", "sig" }`. The run itself is in `log/deploy-<id>.log`: Zeus's steps as `zeus: <time> …` lines, then the script's output. What a repository's script must honour is in `docs/deploy-script.md`.
 
 ## 4. The signed log line (`log/approvals-YYYY-MM.jsonl`)
 One JSON object per line, keys sorted. `sig` is HMAC-SHA256, hex, over the line's canonical JSON **without `sig`** (keys sorted, `,` and `:` separators, no spaces, UTF-8), keyed by `ZEUS_LOG_KEY` (`~/.config/zeus/secret.env`, mode 600, made by `zeus init`).
@@ -92,4 +102,5 @@ It makes a request for the current `main` (or takes the one already waiting for 
 | `zeus deploy <repo>` (ssh) | requested, approved, deploy started | as `request` and `approve` | usage |
 | `zeus status [--json]` | printed | `repos.json` broken (`deployed` is then empty) | — |
 | `zeus check-config [--file F]` | ok | errors | — |
+| `zeus deploy-run <id>` (internal) | deployed | not approved or not signed, refused before running, failed (reason on the record) | usage |
 | `zeus verify-log [path] [--key-file F]` | every line ok | key or path missing | usage (10: a bad line) |

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0 – 2026-10-21
+- `zeus deploy-run <id>` (issue #8, milestone 0.3 "the deploy"), started by `approve` under `systemd-run`: one at a time (a lock under the data folder); runs only an `approved` record whose approval is a signed line in the log; checks the health setting against the fixed list again (a free `exec` is refused before anything runs); makes the clone at `path` on the first deploy, fetches `main` of the allowlisted url, checks the commit is still on it, refuses submodules and a tree without `scripts/deploy.sh`, and checks the commit out detached with hooks off; runs `bash scripts/deploy.sh --no-pull` with `ZEUS_ID`, `ZEUS_SHA`, `ZEUS_PREVIOUS`, output into `log/deploy-<id>.log`, stopped after `deploy_timeout_s`, noting whether `ZEUS_STAGE=install` was printed; waits up to `health_wait_s` for the health check (`http` on 127.0.0.1 with the version match, `service`, or the fixed `exec` list). Success writes `state/<owner>--<name>.json` (`deployed`, `previous`, 10 `history`), the request becomes `deployed`, one signed line goes to `log/deploys-YYYY-MM.jsonl`, the alert clears. A failure ends `failed` with the reason and the stage (the rollback after the install is #9).
+- `docs/deploy-script.md` and `examples/deploy.sh.example`: what a repository's `scripts/deploy.sh` must honour.
+
 ## 0.2.2 – 2026-10-21
 - `zeus verify-log [<file or folder>] [--key-file F] [--quiet]` (issue #7): recomputes the HMAC of every line in `approvals-*.jsonl`, Zeus's own or the journal copy in the config repo, and prints ok or bad (no sig, not JSON, sig does not match) per line with a total; exit 10 when any line is bad. `docs/contract.md` says what a good signature proves (the line is unchanged since signing) and what it does not (who approved, that no line was deleted).
 
