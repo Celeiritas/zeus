@@ -2,14 +2,13 @@
 import argparse
 import sys
 
-from zeus import config, init, version
+from zeus import config, init, queue, version
 
 DESCRIPTION = ("Zeus deploys a commit only after the owner approved it, and can put the previous approved commit back. "
                "He never fetches from anywhere but the allowlisted repositories, never deploys a branch, never runs a "
                "command from a message, a page or a config, and never pushes anywhere.")
 # Commands later issues build (docs/design.md §13); each says which issue, so a stub is never mistaken for a bug.
 LATER = (
-    ("queue", "turn the request messages in requests/ into records (zeus-queue.service)", "#3"),
     ("request", "make a record now for the current main of a repository", "#4"),
     ("decline", "mark a waiting request declined, with a reason word", "#4"),
     ("status", "what waits, what is deploying, what is live", "#4"),
@@ -54,6 +53,9 @@ def build_parser():
     p = sub.add_parser("check-config", help="read repos.json, say what every repository deploys, and list what is wrong")
     p.add_argument("--file", metavar="FILE", help="the allowlist to check (default: $ZEUS_CONFIG or " + config.CONFIG + ")")
     p.set_defaults(func=check_config)
+    p = sub.add_parser("queue", help="turn the request messages in requests/ into records (zeus-queue.service)")
+    p.add_argument("--file", metavar="FILE", help=argparse.SUPPRESS)
+    p.set_defaults(func=queue.main)
     p = sub.add_parser("init", help="make the log signing key (secret.env, mode 600) and the data folders; never overwrites")
     p.set_defaults(func=lambda a: init.run(print))
     for name, help_text, issue in LATER:
