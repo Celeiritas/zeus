@@ -62,7 +62,13 @@ One JSON object per line, keys sorted. `sig` is HMAC-SHA256, hex, over the line'
   "by": { "user": "<tailnet login or shell user>", "via": "elaia", "ip": "<address>" },
   "reason": "not-now", "janus": "not asked", "zeus": "0.1.4", "sig": "<64 hex>" }
 ```
-`action` is `decline` or `deploy` (`janus: "allowed"`, `by.node` from Janus's answer when it gives one); `rollback` and `release` follow (#9, #12). `zeus verify-log` (#7) re-checks every line; the journal copy in the private config repo carries the signatures with it.
+`action` is `decline` or `deploy` (`janus: "allowed"`, `by.node` from Janus's answer when it gives one); `rollback` and `release` follow (#9, #12). `zeus verify-log [<file or folder>] [--key-file <secret.env>] [--quiet]` recomputes every line's HMAC and prints `<file>:<line>: ok` or `bad (<why>)` per line and a total; exit 0 when all are ok, 10 when any is bad, 1 when the key or the path is missing. The journal copy in the private config repo carries the signatures with it, so it is checked the same way on the server, where the key is: `zeus verify-log ~/src/realm/zeus/approvals`.
+
+**What a good signature proves, and what it doesn't.**
+- It proves the line is byte-for-byte what Zeus wrote with this key: a changed field, a removed `sig`, or a line made up by hand fails.
+- It does not prove who approved. That was Janus's check at the moment of the approval; the `by` field records what Janus said.
+- It does not prove that no line is missing. Deleting a whole line, or a whole month's file, leaves the others valid. The journal's git history in the config repo is what shows a removal.
+- It is only as safe as the key. Anyone who can read `secret.env` can sign a line, which is why the file must be mode 600 and stays on the server and in its backup, never in git.
 
 ## 5. Zeus → Janus: `janus verify-approval`
 Zeus writes one JSON object to Janus's stdin: `{ "action": "deploy", "repo": "you/argus-ui", "sha": "<40 hex>", "user": "<login>" | null, "ip": "<client address>", "when": "<iso>" }`. From the Throne, `user` is the `Tailscale-User-Login` the plugin saw and Janus checks it equals the whois user; over ssh, `user` is `null` and Janus answers with the whois user (`"user"` in its JSON), which is what the log records. Exit 0 allowed · 10 refused · 2 (or anything else) failed; Zeus reads a JSON object on stdout when there is one (`reasons`: list of sentences, `node`: the device name), else every non-empty line of stdout and stderr is a reason. Janus is given 30 s. The program is `janus` on PATH (`ZEUS_JANUS` names another, for the tests only); the deploy is started with `systemd-run` (`ZEUS_SYSTEMD_RUN` likewise).
@@ -86,3 +92,4 @@ It makes a request for the current `main` (or takes the one already waiting for 
 | `zeus deploy <repo>` (ssh) | requested, approved, deploy started | as `request` and `approve` | usage |
 | `zeus status [--json]` | printed | `repos.json` broken (`deployed` is then empty) | — |
 | `zeus check-config [--file F]` | ok | errors | — |
+| `zeus verify-log [path] [--key-file F]` | every line ok | key or path missing | usage (10: a bad line) |
