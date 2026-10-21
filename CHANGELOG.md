@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.1.3 – 2026-10-21
+- `zeus queue` (issue #3, `zeus-queue.service`): every message in `requests/` becomes a record in `queue/<id>.json` and leaves the folder, whatever happens. Zeus fetches `main` of the allowlist's url himself (into the clone at `path`, or a bare mirror under `~/.local/share/zeus/mirrors/` before the first deploy) and refuses a commit that is not on it, a repository not in `repos.json` (nothing is fetched), a broken message, and a duplicate of a waiting request. `files` and `rules_changed` come from the diff. A newer commit of the same repository supersedes the waiting one ("replaced by 4.9.1"); a request expires `expire_hours` after `seen`, enforced on listing. Terminal records move to `queue/.done/`.
+
 ## 0.1.2 – 2026-10-21
 - File modes: `check-config` fails a private repository's deploy key that other users can read (`chmod 600` in the message); `zeus init` tightens a kept `secret.env` to 600 and says so, and the key reader refuses one other users can read.
 - `tests/test_check_private.py` passes the denylist path with forward slashes, so it runs on a Windows PC too (`awk -v` reads a Windows path's backslashes as escapes).
