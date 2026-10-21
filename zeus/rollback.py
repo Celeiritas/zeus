@@ -5,7 +5,7 @@ Rolling back twice goes one step further back each time: the history is a stack.
 import sys
 from datetime import timedelta
 
-from zeus import approve, config, deploy, log, queue, version
+from zeus import alert, approve, config, deploy, log, queue, version
 
 EXPIRES_MIN = 10           # a rollback record is for now: it expires quickly, and nothing re-shows it as waiting
 
@@ -66,7 +66,8 @@ def rollback(store, cfg, name, who, sha=None, now=None, out=None, confirm=None):
         rec["reason"] = ("Janus refused: " if janus.verdict == "refused" else "Janus could not verify: ") + "; ".join(janus.reasons)
         store.write(rec)
         if janus.verdict == "failed":
-            approve.alert_write("%s: a rollback could not be verified by Janus (%s)" % (key.split("/")[-1], "; ".join(janus.reasons)), now)
+            alert.raise_("zeus-approve", "alert", "%s: a rollback could not be verified by Janus (%s)"
+                         % (key.split("/")[-1], "; ".join(janus.reasons)), now)
         out("zeus rollback: " + rec["reason"])
         return 1
     by = {"user": who.user or janus.user, "ip": who.ip, "via": who.via}
@@ -86,7 +87,8 @@ def rollback(store, cfg, name, who, sha=None, now=None, out=None, confirm=None):
     rec["deploy"] = {"started": ok, "unit" if ok else "error": text, "at": queue.stamp(queue.now_local())}
     store.write(rec)
     if not ok:
-        approve.alert_write("%s: the rollback was approved but could not be started: %s" % (key.split("/")[-1], text), now)
+        alert.raise_("zeus-approve", "alert", "%s: the rollback was approved but could not be started: %s"
+                     % (key.split("/")[-1], text), now)
         out("zeus rollback: approved and logged, but it did not start: %s" % text)
         return 1
     out("%s: rollback of %s %s → %s approved by %s; running as %s" % (rid, key, live.get("version") or live["sha"][:7],

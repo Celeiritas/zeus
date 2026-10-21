@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.2 – 2026-10-21
+- The alert file in the agents' common format (issue #10; argus-ui #8, as Hermes): `~/.local/state/argus-ui/alerts/zeus.json` = `{ job, level, since, message, link: "throne" }`. `alert` (Argus glares) for a held approval or rollback, a deploy that could not be started, and a failed deploy whose previous could not be restored ("argus-ui 4.9.1 failed and 4.9.0 could not be restored"); `warn` (card text only) for a deploy that failed before the install or was rolled back. A warning never hides an alert. Cleared by the next successful deploy or by the new `zeus seen`; an approval no longer clears it.
+- Argus task cards: `units/agents/zeus-queue.json` and `zeus-deploy.json` (`notes`, `code`, `log`, `writes_to`), installed into `~/.config/argus-ui/agents/` by `scripts/install.sh`.
+
 ## 0.3.1 – 2026-10-21
 - Failed deploys (issue #9): a failure before `ZEUS_STAGE=install` holds (nothing was changed; `failed` and an alert). A failure after it, a timeout, or a health check that never passes puts back what was live before the run, with its own script and health check, once: `rolled-back`, or `failed` with the alert "argus-ui 4.9.1 failed and 4.9.0 could not be restored". Zeus never retries on his own. The run log says each step in a plain sentence.
 - `zeus rollback <repo>` (Throne: `--user --ip --sha`; ssh: typed yes): action `rollback`, target `state.previous`, Janus verifies, a signed `rollback` line, then the same `deploy-run`, which refuses if `previous` changed in between. `previous` becomes `deployed` and the stack moves one step.

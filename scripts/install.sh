@@ -19,5 +19,8 @@ if [ $UNITS = 1 ]; then
   systemctl --user daemon-reload
   systemctl --user enable --now zeus-queue.path
   echo "installed zeus-queue.path + zeus-queue.service (with argus-limits.conf); zeus-queue.path is enabled"
+  A="${ARGUS_REGISTRY:-$HOME/.config/argus-ui/agents}"; mkdir -p "$A"   # the task-card notes Argus reads
+  install -m 644 units/agents/zeus-queue.json units/agents/zeus-deploy.json "$A/"
+  echo "installed the Argus cards for zeus-queue and zeus-deploy in $A"
 fi
 [ -f "$HOME/.config/zeus/secret.env" ] || echo "next: zeus init (makes ~/.config/zeus/secret.env), then copy repos.json to ~/.config/zeus/"

@@ -1,0 +1,6 @@
+{
+  "notes": "Turns Hermes's deploy-request messages into records on the Throne; Zeus checks main himself. Woken by zeus-queue.path, exits when requests/ is empty.",
+  "code": "https://github.com/you/zeus/blob/main/zeus/queue.py",
+  "log": "~/.local/share/zeus/queue/",
+  "writes_to": ["~/.local/share/zeus/queue/", "~/.local/share/zeus/mirrors/"]
+}

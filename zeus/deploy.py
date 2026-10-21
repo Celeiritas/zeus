@@ -14,7 +14,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from zeus import approve, config, log, queue, version
+from zeus import alert, approve, config, log, queue, version
 
 STAGE_LINE = "ZEUS_STAGE=install"
 HISTORY = 10
@@ -317,7 +317,8 @@ def run(store, cfg, rid, out=None):
                 store.write(rec)
                 say("failed before the install began, so nothing was changed; holding: %s" % e)
                 deploy_line(store, rec, "failed", str(e), stage, now)
-                approve.alert_write("%s %s failed before the install; nothing was changed: %s" % (name, this, e), now)
+                alert.raise_("zeus-deploy", "warn", "%s %s failed before the install; nothing was changed: %s"
+                             % (name, this, e), now)
                 runlog.close()
                 return 1
             say("failed after the install had begun: %s" % e)
@@ -331,7 +332,7 @@ def run(store, cfg, rid, out=None):
                 rec["deploy"]["restored"] = {"sha": live["sha"], "version": live.get("version")}
                 store.write(rec)
                 deploy_line(store, rec, "rolled-back", rec["reason"], stage, now)
-                approve.alert_write("%s %s failed and %s was put back: %s" % (name, this, old, e), now)
+                alert.raise_("zeus-deploy", "warn", "%s %s failed and %s was put back: %s" % (name, this, old, e), now)
                 say("rolled back: %s %s runs again" % (rec["repo"], old))
                 runlog.close()
                 return 1
@@ -343,7 +344,7 @@ def run(store, cfg, rid, out=None):
             rec["deploy"]["outcome"] = "failed"
             store.write(rec)
             deploy_line(store, rec, "failed", rec["reason"], stage, now)
-            approve.alert_write(message, now)
+            alert.raise_("zeus-deploy", "alert", message, now)
             say("failed: %s. Nothing more is tried; look at this log and the Throne." % message)
             runlog.close()
             return 1
@@ -357,7 +358,7 @@ def run(store, cfg, rid, out=None):
         rec["deploy"].update(finished=queue.stamp(now), outcome="deployed", install_stage=stage)
         store.write(rec)
         deploy_line(store, rec, "deployed", None, stage, now)
-        approve.alert_clear()
+        alert.clear()
         say("%s %s %s (%s)" % ("rolled back to" if rollback else "deployed", rec["repo"], rec["version"] or "",
                                rec["sha"][:7]))
         runlog.close()
