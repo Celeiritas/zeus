@@ -2,14 +2,13 @@
 import argparse
 import sys
 
-from zeus import approve, commands, config, deploy, init, queue, verify, version
+from zeus import approve, commands, config, deploy, init, queue, rollback, verify, version
 
 DESCRIPTION = ("Zeus deploys a commit only after the owner approved it, and can put the previous approved commit back. "
                "He never fetches from anywhere but the allowlisted repositories, never deploys a branch, never runs a "
                "command from a message, a page or a config, and never pushes anywhere.")
 # Commands later issues build (docs/design.md §13); each says which issue, so a stub is never mistaken for a bug.
 LATER = (
-    ("rollback", "put the previous approved commit back", "#9"),
     ("approve-release", "approve a release of a quarantined Hermes arrival", "#12"),
 )
 
@@ -79,6 +78,14 @@ def build_parser():
     p.add_argument("--json", action="store_true", help="the document the Throne plugin reads (docs/contract.md)")
     p.add_argument("--file", metavar="FILE", help=argparse.SUPPRESS)
     p.set_defaults(func=commands.main_status)
+    p = sub.add_parser("rollback", help="put the previous approved commit back (Janus verifies, signed line, same deploy run): "
+                                       "ssh {{SSH}} 'zeus rollback argus-ui'")
+    p.add_argument("repo", help="argus-ui or you/argus-ui")
+    p.add_argument("--sha", help="from the Throne: the target the page showed; over ssh the prompt shows it")
+    p.add_argument("--user", help=argparse.SUPPRESS)
+    p.add_argument("--ip", help=argparse.SUPPRESS)
+    p.add_argument("--file", metavar="FILE", help=argparse.SUPPRESS)
+    p.set_defaults(func=rollback.main)
     p = sub.add_parser("deploy-run", help="(internal, started by approve under systemd-run) the deploy of one approved request")
     p.add_argument("id")
     p.add_argument("--file", metavar="FILE", help=argparse.SUPPRESS)
