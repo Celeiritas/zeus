@@ -1,0 +1,12 @@
+# zeus-queue.path: start the queue whenever Hermes has dropped a request message (docs/design.md §3). A kernel watch:
+# nothing of Zeus runs while requests/ is empty. zeus-queue.service leaves the folder empty, or this unit would fire
+# forever. scripts/install.sh copies it to ~/.config/systemd/user/ and enables it.
+[Unit]
+Description=Zeus queue: a deploy request is waiting
+
+[Path]
+DirectoryNotEmpty=%h/.local/share/zeus/requests
+Unit=zeus-queue.service
+
+[Install]
+WantedBy=default.target

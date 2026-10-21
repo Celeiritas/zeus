@@ -1,0 +1,10 @@
+# zeus-queue.service: one run of the queue (zeus queue), started by zeus-queue.path. A one-shot: it turns every request
+# message into a record and exits with requests/ empty. argus-limits.conf (a drop-in next to it) adds the CPU, memory
+# and I/O limits every agent task gets. The deploys themselves run elsewhere: systemd-run --user --unit=zeus-deploy-<id>.
+[Unit]
+Description=Zeus queue: record every waiting deploy request
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/zeus queue
+Nice=10

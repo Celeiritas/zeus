@@ -224,3 +224,10 @@ CLAUDE.local.md
 node_modules/
 tests/out/
 # never ignore package-lock.json: if npm is ever used, commit it
+
+# Zeus: never commit the signing key, deploy keys, the queue, the state or the logs
+secret.env
+keys/
+queue/
+state/
+*.jsonl

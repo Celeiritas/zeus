@@ -1,0 +1,2 @@
+# systemd units
+`zeus-queue.path` watches `~/.local/share/zeus/requests/` and starts `zeus-queue.service`, a one-shot (`zeus queue`) that turns every request message into a record and leaves the folder empty. `argus-limits.conf` is the drop-in every agent task gets (CPU 25 %, 512 MB, low I/O weight, nice 10). `scripts/install.sh` copies all three into `~/.config/systemd/user/` and enables the path unit. Zeus has no timer: deploys are started one at a time by `zeus approve` with `systemd-run --user --unit=zeus-deploy-<id>` (docs/design.md §4, §10).
