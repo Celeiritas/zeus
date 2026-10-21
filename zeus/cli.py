@@ -2,14 +2,13 @@
 import argparse
 import sys
 
-from zeus import commands, config, init, queue, version
+from zeus import approve, commands, config, init, queue, version
 
 DESCRIPTION = ("Zeus deploys a commit only after the owner approved it, and can put the previous approved commit back. "
                "He never fetches from anywhere but the allowlisted repositories, never deploys a branch, never runs a "
                "command from a message, a page or a config, and never pushes anywhere.")
 # Commands later issues build (docs/design.md §13); each says which issue, so a stub is never mistaken for a bug.
 LATER = (
-    ("approve", "approve one request for one commit, once; verified by Janus and signed into the log", "#5"),
     ("verify-log", "re-check the signature of every approval line", "#7"),
     ("deploy-run", "(internal) the deploy itself, under systemd-run", "#8"),
     ("rollback", "put the previous approved commit back", "#9"),
@@ -63,6 +62,14 @@ def build_parser():
     p.add_argument("--user", help=argparse.SUPPRESS)   # the Throne passes the tailnet login; from a shell it is $USER
     p.add_argument("--ip", help=argparse.SUPPRESS)
     p.set_defaults(func=commands.main_decline)
+    p = sub.add_parser("approve", help="approve one request for one commit, once: fresh, re-checked on main, verified by "
+                                      "Janus, signed into the log, then deployed under systemd-run")
+    p.add_argument("id")
+    p.add_argument("--sha", required=True, help="the commit the page showed (40 hex); must equal the record's")
+    p.add_argument("--user", required=True, help="the tailnet login the Throne saw (Tailscale-User-Login)")
+    p.add_argument("--ip", required=True, help="the client's tailnet address (X-Forwarded-For)")
+    p.add_argument("--file", metavar="FILE", help=argparse.SUPPRESS)
+    p.set_defaults(func=approve.main)
     p = sub.add_parser("status", help="what waits, what is deploying, what is live, and the last ten history rows")
     p.add_argument("--json", action="store_true", help="the document the Throne plugin reads (docs/contract.md)")
     p.add_argument("--file", metavar="FILE", help=argparse.SUPPRESS)
