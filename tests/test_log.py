@@ -80,6 +80,7 @@ class LogTest(unittest.TestCase):
     def test_a_secret_with_a_non_hex_key_is_refused(self):
         self.secret.parent.mkdir(parents=True)
         self.secret.write_text("ZEUS_LOG_KEY=not-hex\n")
+        os.chmod(self.secret, 0o600)                 # else the loose-mode refusal comes first on Linux
         with self.assertRaises(log.LogError) as cm:
             log.key()
         self.assertIn("is not hex", str(cm.exception))
