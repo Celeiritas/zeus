@@ -3,6 +3,7 @@ HOME, so nothing on this machine is read. The branch and the deploy script are f
 file cannot name either, nor a free command, nor a repository outside GitHub."""
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -85,6 +86,18 @@ class ConfigTest(unittest.TestCase):
         key.write_text("not a real key")
         cfg = self.h.write().check()
         self.assertEqual(cfg.warnings, [])
+
+    @unittest.skipIf(os.name == "nt", "file modes mean nothing on Windows")
+    def test_a_deploy_key_readable_by_others_fails(self):
+        key = self.h.home / ".config" / "zeus" / "keys" / "realm"
+        key.parent.mkdir(parents=True)
+        key.write_text("not a real key")
+        os.chmod(key, 0o644)
+        cfg, text = self.errors()
+        self.assertEqual(text, "repos.you/realm: deploy key ~/.config/zeus/keys/realm is readable by other users, who "
+                               "could fetch the private repository with it. chmod 600 ~/.config/zeus/keys/realm.")
+        os.chmod(key, 0o600)
+        self.assertEqual(self.h.write().check().errors, [])
 
     def test_explains_every_repository_in_one_sentence(self):
         lines = self.h.write().check().explain()

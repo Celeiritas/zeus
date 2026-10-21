@@ -65,6 +65,20 @@ class InitTest(unittest.TestCase):
         self.assertIn("has no ZEUS_LOG_KEY line", out[1])
         self.assertIsNone(init.read_key())
 
+    @unittest.skipIf(os.name == "nt", "file modes mean nothing on Windows")
+    def test_a_secret_other_users_can_read_is_refused_and_init_tightens_it(self):
+        init.run(lambda s: None)
+        os.chmod(self.secret, 0o644)
+        with self.assertRaises(init.SecretError) as cm:
+            init.read_key()
+        self.assertIn("readable by other users", str(cm.exception))
+        self.assertIn("chmod 600 " + str(self.secret), str(cm.exception))
+        out = []
+        self.assertEqual(init.run(out.append), 0)
+        self.assertIn("already exists, kept; mode fixed to 600", out[0])
+        self.assertEqual(stat.S_IMODE(self.secret.stat().st_mode), 0o600)
+        self.assertRegex(init.read_key(), r"^[0-9a-f]{64}$")
+
     def test_makes_the_data_folders_once(self):
         out = []
         init.run(out.append)
