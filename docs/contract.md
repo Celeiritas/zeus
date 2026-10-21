@@ -33,6 +33,7 @@ Any file that is not valid JSON, not an object, or larger than 64 KB is refused 
   "verified": { "on_main": true, "at": "2026-10-21T09:00:12-06:00" },
   "approval": null, "deploy": null }
 ```
+- `action`: `deploy`, or `rollback` for a hand rollback (§4a).
 - `state`: `pending` or `held` (in `queue/`), then one of `approved`, `deploying`, `deployed`, `failed`, `rolled-back`, `expired`, `superseded`, `declined`, `refused` (in `queue/.done/`, never deleted).
 - `reason` (text) is present on every non-pending state that stopped the request: `refused` (why), `superseded` ("replaced by 4.9.1", plus `superseded_by: {id, version, sha}`), `expired`, `declined` (the reason word).
 - `files` is the number of paths changed `previous..sha` (the commit's own change when `previous` is unknown; `null` when git could not say); `rules_changed` lists those among the repository's `rules`.
@@ -62,7 +63,16 @@ Written by `zeus deploy-run` after a deploy passes its health check:
   "previous": { <the entry deployed before it, or null> },
   "history": [ <earlier entries, newest first, 10 at most> ] }
 ```
-`previous` is what a rollback (#9) puts back. Every deploy-run also appends one signed line to `log/deploys-YYYY-MM.jsonl`: `{ "t", "id", "repo", "sha", "version", "outcome", "reason", "install_stage", "zeus", "sig" }`. The run itself is in `log/deploy-<id>.log`: Zeus's steps as `zeus: <time> …` lines, then the script's output. What a repository's script must honour is in `docs/deploy-script.md`.
+`previous` is what a hand rollback puts back.
+
+**When a deploy-run fails** (docs/design.md §6):
+| Where | What Zeus does | Request ends |
+|---|---|---|
+| before the script printed `ZEUS_STAGE=install` (fetch, checkout, build) | nothing else; nothing was changed | `failed`, alert "… failed before the install; nothing was changed" |
+| after it, a timeout, or health never passing | puts back what was live before this run (`state.deployed`): its commit, its own script, its health, once | `rolled-back` (alert "… failed and 4.9.0 was put back"), or `failed` with the alert "argus-ui 4.9.1 failed and 4.9.0 could not be restored" (or "… there is no earlier approved commit to put back") |
+Zeus never retries on his own. The run log says each step in a sentence (`zeus: … failed after the install had begun: …`, `putting back 4.9.0 (3fa9c1b), the commit that was live before this run, because …`). The record keeps `deploy.install_stage` and, after a restore, `deploy.restored: {sha, version}`.
+
+**A hand rollback** (`zeus rollback <repo>`, from the Throne with `--user --ip --sha`, or over ssh with a typed yes): a record with `"action": "rollback"`, `sha` = `state.previous`, `from` = what runs now, expiring after 10 minutes. Janus verifies with `action: rollback`; a signed `rollback` line goes into the approvals log; the same `deploy-run` does the work, refusing if `previous` changed in between. On success `previous` becomes `deployed` and the stack moves one step: rolling back again goes one step further. Every deploy-run also appends one signed line to `log/deploys-YYYY-MM.jsonl`: `{ "t", "id", "repo", "sha", "version", "outcome", "reason", "install_stage", "zeus", "sig" }`. The run itself is in `log/deploy-<id>.log`: Zeus's steps as `zeus: <time> …` lines, then the script's output. What a repository's script must honour is in `docs/deploy-script.md`.
 
 ## 4. The signed log line (`log/approvals-YYYY-MM.jsonl`)
 One JSON object per line, keys sorted. `sig` is HMAC-SHA256, hex, over the line's canonical JSON **without `sig`** (keys sorted, `,` and `:` separators, no spaces, UTF-8), keyed by `ZEUS_LOG_KEY` (`~/.config/zeus/secret.env`, mode 600, made by `zeus init`).
@@ -102,5 +112,6 @@ It makes a request for the current `main` (or takes the one already waiting for 
 | `zeus deploy <repo>` (ssh) | requested, approved, deploy started | as `request` and `approve` | usage |
 | `zeus status [--json]` | printed | `repos.json` broken (`deployed` is then empty) | — |
 | `zeus check-config [--file F]` | ok | errors | — |
-| `zeus deploy-run <id>` (internal) | deployed | not approved or not signed, refused before running, failed (reason on the record) | usage |
+| `zeus rollback <repo>` | approved, logged, the rollback run started | no previous, wrong target, no identity, cancelled, Janus refused or failed | usage |
+| `zeus deploy-run <id>` (internal) | deployed | not approved or not signed, refused before running, failed or rolled back (reason on the record) | usage |
 | `zeus verify-log [path] [--key-file F]` | every line ok | key or path missing | usage (10: a bad line) |

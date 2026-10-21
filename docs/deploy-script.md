@@ -20,7 +20,7 @@ Zeus runs one script per repository, always the same path, always from the commi
   | Where it failed | What Zeus does |
   |---|---|
   | before `ZEUS_STAGE=install` | nothing was changed; the request is `failed` and Zeus holds |
-  | after it, a timeout, or health never passing | the previous approved commit is put back by running this same script on it (#9) |
+  | after it, a timeout, or health never passing | the commit that was live before is put back by running *its own* script on it, once; if that fails too, the alert names both versions |
 - **Be safe to run again** on the same commit and on an older one: the rollback is exactly that.
 - **Never delete the previous version.** Set it aside; the rollback does not depend on it, but people do.
 - **Use only what the commit carries and what the server already has.** No downloads of code to run, no commands from files Hermes delivered.

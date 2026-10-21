@@ -35,7 +35,8 @@ class Health(http.server.BaseHTTPRequestHandler):
         pass
 
 
-class DeployTest(ApproveBase):
+class DeployBase(ApproveBase):
+    """ApproveBase plus the marker, the health stand-in, short timeouts, and helpers to approve and run deploys."""
     def setUp(self):
         super().setUp()
         self.marker = Path(self.tmp.name) / "marker.txt"
@@ -63,6 +64,8 @@ class DeployTest(ApproveBase):
     def runlog(self, rid):
         return (self.data / "log" / ("deploy-%s.log" % rid)).read_text(encoding="utf-8")
 
+
+class DeployTest(DeployBase):
     # the full run
     def test_a_full_run_ends_deployed_with_the_right_state(self):
         sha, rec = self.approved()
@@ -207,7 +210,8 @@ class DeployTest(ApproveBase):
         with mock.patch.dict(os.environ, {"FAKE_DEPLOY": "fail-install"}):
             self.assertEqual(self.deploy(rec["id"]), 1)
         got = self.store.read(rec["id"])
-        self.assertEqual(got["reason"], "scripts/deploy.sh exited 4 after the install had begun.")
+        self.assertEqual(got["reason"], "scripts/deploy.sh exited 4 after the install had begun; 4.9.0 failed and there "
+                                        "is no earlier approved commit to put back.")
         self.assertTrue(got["deploy"]["install_stage"])
 
     def test_a_timeout_stops_the_script(self):
@@ -216,7 +220,8 @@ class DeployTest(ApproveBase):
         with mock.patch.dict(os.environ, {"FAKE_DEPLOY": "hang"}):
             self.assertEqual(self.deploy(rec["id"]), 1)
         self.assertEqual(self.store.read(rec["id"])["reason"],
-                         "scripts/deploy.sh did not finish in 1 s and was stopped, after the install had begun.")
+                         "scripts/deploy.sh did not finish in 1 s and was stopped, after the install had begun; "
+                         "4.9.0 failed and there is no earlier approved commit to put back.")
 
     def test_health_that_never_passes(self):
         sha, rec = self.approved()
