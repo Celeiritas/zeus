@@ -65,14 +65,24 @@ One JSON object per line, keys sorted. `sig` is HMAC-SHA256, hex, over the line'
 `action` is `decline` or `deploy` (`janus: "allowed"`, `by.node` from Janus's answer when it gives one); `rollback` and `release` follow (#9, #12). `zeus verify-log` (#7) re-checks every line; the journal copy in the private config repo carries the signatures with it.
 
 ## 5. Zeus → Janus: `janus verify-approval`
-Zeus writes one JSON object to Janus's stdin: `{ "action": "deploy", "repo": "you/argus-ui", "sha": "<40 hex>", "user": "<login>", "ip": "<client address>", "when": "<iso>" }`. Exit 0 allowed · 10 refused · 2 (or anything else) failed; Zeus reads a JSON object on stdout when there is one (`reasons`: list of sentences, `node`: the device name), else every non-empty line of stdout and stderr is a reason. Janus is given 30 s. The program is `janus` on PATH (`ZEUS_JANUS` names another, for the tests only); the deploy is started with `systemd-run` (`ZEUS_SYSTEMD_RUN` likewise).
+Zeus writes one JSON object to Janus's stdin: `{ "action": "deploy", "repo": "you/argus-ui", "sha": "<40 hex>", "user": "<login>" | null, "ip": "<client address>", "when": "<iso>" }`. From the Throne, `user` is the `Tailscale-User-Login` the plugin saw and Janus checks it equals the whois user; over ssh, `user` is `null` and Janus answers with the whois user (`"user"` in its JSON), which is what the log records. Exit 0 allowed · 10 refused · 2 (or anything else) failed; Zeus reads a JSON object on stdout when there is one (`reasons`: list of sentences, `node`: the device name), else every non-empty line of stdout and stderr is a reason. Janus is given 30 s. The program is `janus` on PATH (`ZEUS_JANUS` names another, for the tests only); the deploy is started with `systemd-run` (`ZEUS_SYSTEMD_RUN` likewise).
 
-## 6. Command line, exit codes
+## 6. Approving over ssh
+The one-line form, from `{{PC}}` or any approved device:
+```
+ssh {{SSH}} 'zeus deploy argus-ui'
+```
+It makes a request for the current `main` (or takes the one already waiting for that commit), then asks `Deploy you/argus-ui 4.9.0 (3fa9c1b, 12 files)? type yes:` on stderr and reads one line from stdin. Only `yes` goes on; anything else, or no answer, cancels before Janus is asked. `ssh {{SSH}} 'zeus approve <id>'` does the same for a request from the Throne's list (`--sha` is optional there: the prompt shows the commit).
+- Who is asking comes from the connection: the client address is the first word of `SSH_CONNECTION`, `via` is `ssh`, and the user is left to Janus's whois. `--user` or `--ip` in an ssh session is refused.
+- Outside an ssh session, `--user`, `--ip` and `--sha` are the Throne's call (the plugin reads them from `tailscale serve`'s headers; the 3-second hold was the yes). Without them Zeus refuses: there is no identity to check.
+
+## 7. Command line, exit codes
 | Command | 0 | 1 | 2 |
 |---|---|---|---|
 | `zeus queue` | every request handled | `repos.json` broken (requests refused, folder still emptied) | — |
 | `zeus request <repo>` | a pending record was made | refused or nothing fetched (unknown repository, fetch failed, not on main) | usage |
 | `zeus decline <id> --reason <word>` | declined | no such request, not pending, log not writable | bad reason word |
-| `zeus approve <id> --sha <sha> --user <login> --ip <addr>` | approved, logged, deploy started | refused (not pending, expired, wrong sha, no longer on main, Janus refused), held (Janus failed), or approved but the deploy did not start | usage |
+| `zeus approve <id> --sha <sha> --user <login> --ip <addr>` (Throne) or `zeus approve <id>` (ssh) | approved, logged, deploy started | refused (no identity, `--user` over ssh, not pending, expired, wrong sha, no longer on main, not typed yes, Janus refused), held (Janus failed), or approved but the deploy did not start | usage |
+| `zeus deploy <repo>` (ssh) | requested, approved, deploy started | as `request` and `approve` | usage |
 | `zeus status [--json]` | printed | `repos.json` broken (`deployed` is then empty) | — |
 | `zeus check-config [--file F]` | ok | errors | — |

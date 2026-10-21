@@ -10,7 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from zeus import config, log, queue, version
+from zeus import commands, config, log, queue, version
 
 JANUS_TIMEOUT = 30
 HELD = "held"                      # Janus could not answer; stays in queue/, approvable again, Argus glares
@@ -57,7 +57,7 @@ class Janus:
     """One `janus verify-approval` call: the verdict word, the reasons, and the node name when Janus gives one."""
     def __init__(self, request):
         self.request = request
-        self.verdict, self.reasons, self.node, self.raw = "failed", [], None, ""
+        self.verdict, self.reasons, self.node, self.user, self.raw = "failed", [], None, None, ""
 
     def run(self):
         cmd = command("ZEUS_JANUS", "janus") + ["verify-approval"]
@@ -79,6 +79,7 @@ class Janus:
             reasons = doc.get("reasons")
             self.reasons = [str(x) for x in reasons] if isinstance(reasons, list) else []
             self.node = doc.get("node") if isinstance(doc.get("node"), str) else None
+            self.user = doc.get("user") if isinstance(doc.get("user"), str) else None   # the whois user, for ssh
         else:
             self.reasons = [l.strip() for l in (r.stdout + "\n" + r.stderr).splitlines() if l.strip()]
         if r.returncode == 0:
@@ -118,9 +119,11 @@ def start_deploy(rid):
     return True, "zeus-deploy-" + rid
 
 
-def approve(store, cfg, rid, sha, user, ip, now=None, via="elaia", out=None):
+def approve(store, cfg, rid, sha, user, ip, now=None, via="elaia", out=None, confirm=None):
     """The approval. Returns the exit status: 0 approved and the deploy started · 1 refused or held (the reason was
-    printed and, for Janus's verdicts, kept on the record)."""
+    printed and, for Janus's verdicts, kept on the record). Over ssh, user is None (Janus takes it from whois), sha may
+    be None (the record's, shown in the prompt), and confirm(rec) asks for the typed yes after the on-main re-check and
+    before Janus is asked."""
     now = now or queue.now_local()
     out = out or (lambda s: None)
     queue.expire(store, now)
@@ -131,6 +134,8 @@ def approve(store, cfg, rid, sha, user, ip, now=None, via="elaia", out=None):
     if rec["state"] not in (queue.PENDING, HELD):
         out("zeus approve: %s is %s, not pending; an approval is for one commit, once." % (rid, rec["state"]))
         return 1
+    if sha is None and via == "ssh":
+        sha = rec["sha"]
     if not isinstance(sha, str) or sha != rec["sha"]:
         out("zeus approve: the sha %s is not the one the page showed for %s (%s); nothing was approved."
             % ((sha or "")[:7] or "?", rid, rec["sha"][:7]))
@@ -149,6 +154,9 @@ def approve(store, cfg, rid, sha, user, ip, now=None, via="elaia", out=None):
         store.write(rec)
         out("zeus approve: " + rec["reason"])
         return 1
+    if confirm is not None and not confirm(rec):
+        out("zeus approve: cancelled; nothing was approved.")
+        return 1
     request = {"action": "deploy", "repo": rec["repo"], "sha": sha, "user": user, "ip": ip, "when": queue.stamp(now)}
     janus = Janus(request).run()
     rec["janus"] = {"verdict": janus.verdict, "reasons": janus.reasons, "at": queue.stamp(now), "user": user, "ip": ip}
@@ -166,7 +174,7 @@ def approve(store, cfg, rid, sha, user, ip, now=None, via="elaia", out=None):
                     % (rec["repo"].split("/")[-1], rec["version"] or sha[:7], "; ".join(janus.reasons)), now)
         out("zeus approve: held, Janus failed: " + "; ".join(janus.reasons))
         return 1
-    by = {"user": user, "ip": ip, "via": via}
+    by = {"user": user or janus.user, "ip": ip, "via": via}
     if janus.node:
         by["node"] = janus.node
     try:
@@ -194,10 +202,100 @@ def approve(store, cfg, rid, sha, user, ip, now=None, via="elaia", out=None):
     return 0
 
 
-def main(args):
-    cfg = config.check(args.file)
+# ---- who is asking: the Throne (the plugin) or an ssh session --------------------------------------------------------
+class Caller:
+    """Where the yes comes from. From the Throne: --user and --ip as the plugin read them from tailscale serve's
+    headers, outside any ssh session; the 3-second hold was the yes. Over ssh: the address from SSH_CONNECTION and no
+    user (Janus takes it from whois; a --user given in a shell is refused), and a typed yes."""
+    def __init__(self, via=None, user=None, ip=None, error=None):
+        self.via, self.user, self.ip, self.error = via, user, ip, error
+
+
+def caller(user, ip, env=None):
+    env = os.environ if env is None else env
+    ssh = (env.get("SSH_CONNECTION") or "").split()
+    if ssh:
+        if user or ip:
+            return Caller(error="--user and --ip are refused in an ssh session: Janus takes who you are from the "
+                                "connection (SSH_CONNECTION), never from a flag.")
+        return Caller("ssh", None, ssh[0])
+    if user and ip:
+        return Caller("elaia", user, ip)
+    return Caller(error="no identity to check. Run it over ssh from an approved device (ssh {{SSH}} 'zeus ...'), or "
+                        "approve on the Throne page.")
+
+
+def ask(rec, read=None, write=None):
+    """Deploy <repo> <version> (<sha7>)? type yes. Reads one line from stdin: over `ssh host 'zeus ...'` stdin is the
+    local terminal even without a tty. Anything but yes, or no answer at all, cancels."""
+    write = write or (lambda t: (sys.stderr.write(t), sys.stderr.flush()))
+    read = read or sys.stdin.readline
+    files = rec.get("files")
+    extra = ", %d file%s" % (files, "" if files == 1 else "s") if isinstance(files, int) else ""
+    rules = ", changes the realm's own rules" if rec.get("rules_changed") else ""
+    write("Deploy %s %s (%s%s%s)? type yes: " % (rec["repo"], rec.get("version") or "", rec["sha"][:7], extra, rules))
+    try:
+        answer = read()
+    except (OSError, EOFError, KeyboardInterrupt):
+        answer = ""
+    return (answer or "").strip() == "yes"
+
+
+def _cfg(args, name):
+    cfg = config.check(getattr(args, "file", None))
     if cfg.errors:
-        print("zeus approve: %s has %d error%s; run `zeus check-config`." % (config.short(cfg.path), len(cfg.errors),
-                                                                             "" if len(cfg.errors) == 1 else "s"), file=sys.stderr)
-        cfg = None
-    return approve(queue.Store(), cfg, args.id, args.sha, args.user, args.ip, out=print)
+        print("zeus %s: %s has %d error%s; run `zeus check-config`." % (name, config.short(cfg.path), len(cfg.errors),
+                                                                        "" if len(cfg.errors) == 1 else "s"), file=sys.stderr)
+        return None
+    return cfg
+
+
+def main(args):
+    who = caller(args.user, args.ip)
+    if who.error:
+        print("zeus approve: " + who.error, file=sys.stderr)
+        return 1
+    if who.via == "elaia" and not args.sha:
+        print("zeus approve: --sha is required from the Throne: the commit the page showed.", file=sys.stderr)
+        return 1
+    return approve(queue.Store(), _cfg(args, "approve"), args.id, args.sha, who.user, who.ip, via=who.via, out=print,
+                   confirm=ask if who.via == "ssh" else None)
+
+
+def resolve(cfg, name):
+    """argus-ui or you/argus-ui → the repos.json key; None when unknown or when two owners share the name."""
+    if cfg is None:
+        return None
+    if name in cfg.repos:
+        return name
+    hits = [k for k in cfg.repos if k.split("/")[-1] == name]
+    return hits[0] if len(hits) == 1 else None
+
+
+def deploy(store, cfg, name, who, now=None, out=None, confirm=None):
+    """zeus deploy <repo>: a request for the current main, then the approval of that record, in one go. A request
+    already waiting for the same commit is the one approved."""
+    out = out or (lambda s: None)
+    key = resolve(cfg, name)
+    if key is None:
+        out("zeus deploy: %s is not one repository in repos.json; nothing was fetched." % name)
+        return 1
+    rec = commands.request(store, cfg, key, now=now, out=out)
+    if rec is None:
+        return 1
+    if rec["state"] == "refused" and rec.get("reason", "").startswith("already waiting as "):
+        waiting = [r for r in store.pending(queue.WAITING) if r["repo"] == key and r["sha"] == rec["sha"]]
+        if waiting:
+            rec = waiting[0]
+    if rec["state"] not in (queue.PENDING, HELD):
+        return 1
+    return approve(store, cfg, rec["id"], rec["sha"], who.user, who.ip, now=now, via=who.via, out=out, confirm=confirm)
+
+
+def main_deploy(args):
+    who = caller(args.user, args.ip)
+    if who.error:
+        print("zeus deploy: " + who.error, file=sys.stderr)
+        return 1
+    return deploy(queue.Store(), _cfg(args, "deploy"), args.repo, who, out=print,
+                  confirm=ask if who.via == "ssh" else None)
