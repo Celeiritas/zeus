@@ -71,10 +71,10 @@ class CheckPrivateTest(unittest.TestCase):
         deny = Path(self.tmp.name) / "denylist.txt"
         deny.write_text("# my devices\nzeta-box\n")
         self.stage("backups go to Zeta-Box nightly\n")
-        r = self.check(denylist=str(deny))
+        r = self.check(denylist=deny.as_posix())   # forward slashes: awk -v would read backslashes as escapes
         self.assertEqual(r.returncode, 1)
         self.assertIn("denylist entry 1", r.stdout)
-        self.assertEqual(self.check("--generic", denylist=str(deny)).returncode, 0)
+        self.assertEqual(self.check("--generic", denylist=deny.as_posix()).returncode, 0)
 
     def test_this_repository_is_clean(self):
         r = subprocess.run(["bash", str(SCRIPT), "--generic", "--tree"], cwd=ROOT, capture_output=True, text=True)

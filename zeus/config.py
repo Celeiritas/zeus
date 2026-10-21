@@ -4,6 +4,7 @@ every field, and explain it in plain sentences (`zeus check-config`). The branch
 import json
 import os
 import re
+import stat
 from pathlib import Path
 
 CONFIG = "~/.config/zeus/repos.json"          # or $ZEUS_CONFIG, or `--file`
@@ -260,6 +261,9 @@ def _check_repo(cfg, key, raw, paths):
         warn("repos.%s: \"key\" is only used for a private repository; this one is public, so it is ignored." % key)
     elif r.deploy_key is not None and not r.deploy_key.is_file():
         warn("repos.%s: deploy key %s does not exist yet; make it before the first deploy." % (key, short(r.deploy_key)))
+    elif r.deploy_key is not None and os.name != "nt" and stat.S_IMODE(r.deploy_key.stat().st_mode) & 0o077:
+        err("repos.%s: deploy key %s is readable by other users, who could fetch the private repository with it. "
+            "chmod 600 %s." % (key, short(r.deploy_key), short(r.deploy_key)))
 
     _check_health(cfg, key, raw.get("health"))
     for field in ("services", "rules"):
