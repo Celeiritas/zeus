@@ -93,6 +93,14 @@ class Store:
                 continue
         return recs
 
+    def deployed(self, repo_key):
+        """state/<repo>.json (written by the deploy, 0.3), or None before the first deploy."""
+        p = self.data / "state" / (repo_key.replace("/", "--") + ".json")
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
     def new_id(self, name, sha7, t):
         base = "%s-%s-%s" % (t.strftime("%Y%m%d-%H%M%S"), name, sha7)
         id, n = base, 1
@@ -243,6 +251,12 @@ def one(store, cfg, path, now):
     if msg is None:
         return store.write(_record(store.new_id(name, "nosha", now), None, now, cfg, state="refused",
                                    reason="%s: %s" % (path.name, why)))
+    return admit(store, cfg, msg, now, name)
+
+
+def admit(store, cfg, msg, now, name="request"):
+    """One message (from a file, or made by `zeus request`) to one record: field check, allowlist, duplicate, fetch,
+    on-main, diff, supersede. Every outcome is a record."""
     bad = field_errors(msg)
     sha = msg.get("sha") if isinstance(msg.get("sha"), str) else ""
     repo_key = msg.get("repo") if isinstance(msg.get("repo"), str) else "?"

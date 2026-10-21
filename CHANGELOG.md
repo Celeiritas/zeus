@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.4 – 2026-10-21
+- `zeus request <repo>` (issue #4): a record now for the current `main` of an allowlisted repository, through the same admission as a Hermes message (fetch, on-main check, diff, supersede); `subject`, `version` and `changelog` lines come from the commit itself, `checks` is `none`. An unknown repository is refused without a fetch.
+- `zeus decline <id> --reason <word>`: `pending` → `declined`, one signed line in `log/approvals-YYYY-MM.jsonl`, no Janus call. `log.py` signs every decision line with HMAC-SHA256 over its canonical JSON (keys sorted, no spaces, without `sig`), keyed by `ZEUS_LOG_KEY`.
+- `zeus status [--json]`: what is live per repository, the queue, what is deploying, the last ten history rows, and the one-line status; the JSON shape is in `docs/contract.md`.
+- `docs/contract.md`: the Hermes → Zeus message, the record, the status document, the log line.
+- Pull requests merge themselves when CI is green (`CLAUDE.md`).
+
 ## 0.1.3 – 2026-10-21
 - `zeus queue` (issue #3, `zeus-queue.service`): every message in `requests/` becomes a record in `queue/<id>.json` and leaves the folder, whatever happens. Zeus fetches `main` of the allowlist's url himself (into the clone at `path`, or a bare mirror under `~/.local/share/zeus/mirrors/` before the first deploy) and refuses a commit that is not on it, a repository not in `repos.json` (nothing is fetched), a broken message, and a duplicate of a waiting request. `files` and `rules_changed` come from the diff. A newer commit of the same repository supersedes the waiting one ("replaced by 4.9.1"); a request expires `expire_hours` after `seen`, enforced on listing. Terminal records move to `queue/.done/`.
 

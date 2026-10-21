@@ -2,16 +2,13 @@
 import argparse
 import sys
 
-from zeus import config, init, queue, version
+from zeus import commands, config, init, queue, version
 
 DESCRIPTION = ("Zeus deploys a commit only after the owner approved it, and can put the previous approved commit back. "
                "He never fetches from anywhere but the allowlisted repositories, never deploys a branch, never runs a "
                "command from a message, a page or a config, and never pushes anywhere.")
 # Commands later issues build (docs/design.md §13); each says which issue, so a stub is never mistaken for a bug.
 LATER = (
-    ("request", "make a record now for the current main of a repository", "#4"),
-    ("decline", "mark a waiting request declined, with a reason word", "#4"),
-    ("status", "what waits, what is deploying, what is live", "#4"),
     ("approve", "approve one request for one commit, once; verified by Janus and signed into the log", "#5"),
     ("verify-log", "re-check the signature of every approval line", "#7"),
     ("deploy-run", "(internal) the deploy itself, under systemd-run", "#8"),
@@ -56,6 +53,20 @@ def build_parser():
     p = sub.add_parser("queue", help="turn the request messages in requests/ into records (zeus-queue.service)")
     p.add_argument("--file", metavar="FILE", help=argparse.SUPPRESS)
     p.set_defaults(func=queue.main)
+    p = sub.add_parser("request", help="make a record now for the current main of a repository (the Throne's Re-check)")
+    p.add_argument("repo", help="owner/name, as in repos.json")
+    p.add_argument("--file", metavar="FILE", help=argparse.SUPPRESS)
+    p.set_defaults(func=commands.main_request)
+    p = sub.add_parser("decline", help="mark a waiting request declined, with a reason word; no Janus call, one signed line")
+    p.add_argument("id")
+    p.add_argument("--reason", required=True, metavar="WORD", help="one word, e.g. not-now")
+    p.add_argument("--user", help=argparse.SUPPRESS)   # the Throne passes the tailnet login; from a shell it is $USER
+    p.add_argument("--ip", help=argparse.SUPPRESS)
+    p.set_defaults(func=commands.main_decline)
+    p = sub.add_parser("status", help="what waits, what is deploying, what is live, and the last ten history rows")
+    p.add_argument("--json", action="store_true", help="the document the Throne plugin reads (docs/contract.md)")
+    p.add_argument("--file", metavar="FILE", help=argparse.SUPPRESS)
+    p.set_defaults(func=commands.main_status)
     p = sub.add_parser("init", help="make the log signing key (secret.env, mode 600) and the data folders; never overwrites")
     p.set_defaults(func=lambda a: init.run(print))
     for name, help_text, issue in LATER:
