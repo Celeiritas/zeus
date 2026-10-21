@@ -2,14 +2,13 @@
 import argparse
 import sys
 
-from zeus import approve, commands, config, init, queue, verify, version
+from zeus import approve, commands, config, deploy, init, queue, verify, version
 
 DESCRIPTION = ("Zeus deploys a commit only after the owner approved it, and can put the previous approved commit back. "
                "He never fetches from anywhere but the allowlisted repositories, never deploys a branch, never runs a "
                "command from a message, a page or a config, and never pushes anywhere.")
 # Commands later issues build (docs/design.md §13); each says which issue, so a stub is never mistaken for a bug.
 LATER = (
-    ("deploy-run", "(internal) the deploy itself, under systemd-run", "#8"),
     ("rollback", "put the previous approved commit back", "#9"),
     ("approve-release", "approve a release of a quarantined Hermes arrival", "#12"),
 )
@@ -80,6 +79,10 @@ def build_parser():
     p.add_argument("--json", action="store_true", help="the document the Throne plugin reads (docs/contract.md)")
     p.add_argument("--file", metavar="FILE", help=argparse.SUPPRESS)
     p.set_defaults(func=commands.main_status)
+    p = sub.add_parser("deploy-run", help="(internal, started by approve under systemd-run) the deploy of one approved request")
+    p.add_argument("id")
+    p.add_argument("--file", metavar="FILE", help=argparse.SUPPRESS)
+    p.set_defaults(func=deploy.main)
     p = sub.add_parser("verify-log", help="re-check the signature of every line in the approvals logs; exit 10 if any is bad")
     p.add_argument("path", nargs="?", help="a log file, or a folder of approvals-*.jsonl (default ~/.local/share/zeus/log/; "
                                            "the journal copy in the config repo works too)")

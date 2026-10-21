@@ -1,0 +1,23 @@
+#!/bin/bash
+# examples/deploy.sh.example - the shape of a repository's scripts/deploy.sh that Zeus can run (docs/deploy-script.md).
+# Copy it to scripts/deploy.sh in your repository and fill in the two steps. Zeus runs it as
+#   bash scripts/deploy.sh --no-pull
+# in his own clone, after checking out exactly the approved commit, with ZEUS_ID, ZEUS_SHA and ZEUS_PREVIOUS set.
+# Run by hand without --no-pull it still updates itself from git first, for the bootstrap and for machines without Zeus.
+set -e
+R=$(cd "$(dirname "$0")/.." && pwd); cd "$R"
+PULL=1; [ "$1" = "--no-pull" ] && { PULL=; shift; }
+[ -n "$PULL" ] && git pull --ff-only
+
+# 1. Build. Everything that can fail without changing what runs goes here: compile, test, package.
+#    A failure here means nothing was changed, and Zeus holds (no rollback).
+echo "building $(cat VERSION 2>/dev/null)"
+# bash scripts/build.sh
+
+# 2. The line that tells Zeus the install begins. Print it exactly, on its own line, before the first change.
+echo ZEUS_STAGE=install
+
+# 3. Install and restart. A failure from here on (or a health check that never passes) makes Zeus put the previous
+#    approved commit back by running this same script on it. Set the old version aside; never delete it.
+# bash dist/<name>-$(cat VERSION)/install.sh
+# systemctl --user restart <unit>
