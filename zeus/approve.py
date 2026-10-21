@@ -10,11 +10,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from zeus import commands, config, log, queue, version
+from zeus import alert, commands, config, log, queue, version
 
 JANUS_TIMEOUT = 30
 HELD = "held"                      # Janus could not answer; stays in queue/, approvable again, Argus glares
-ALERT = "~/.local/state/argus-ui/alerts/zeus.json"      # or $ZEUS_ALERT
 DEPLOY_LIMITS = ("-p", "CPUQuota=50%", "-p", "MemoryMax=1G", "-p", "IOWeight=50")
 
 
@@ -33,24 +32,6 @@ def command(env_name, default):
             pass
         return [default]
     return shlex.split(val, posix=os.name != "nt")
-
-
-def alert_path():
-    return Path(os.path.expanduser(os.environ.get("ZEUS_ALERT") or ALERT))
-
-
-def alert_write(message, now):
-    p = alert_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps({"message": message, "link": "throne", "at": queue.stamp(now)}, ensure_ascii=False) + "\n",
-                 encoding="utf-8")
-
-
-def alert_clear():
-    try:
-        alert_path().unlink()
-    except FileNotFoundError:
-        pass
 
 
 class Janus:
@@ -170,7 +151,7 @@ def approve(store, cfg, rid, sha, user, ip, now=None, via="elaia", out=None, con
         rec["state"] = HELD
         rec["reason"] = "held: " + "; ".join(janus.reasons)
         store.write(rec)
-        alert_write("%s %s: Janus could not verify the approval (%s); the request is held"
+        alert.raise_("zeus-approve", "alert", "%s %s: Janus could not verify the approval (%s); the request is held"
                     % (rec["repo"].split("/")[-1], rec["version"] or sha[:7], "; ".join(janus.reasons)), now)
         out("zeus approve: held, Janus failed: " + "; ".join(janus.reasons))
         return 1
@@ -187,12 +168,11 @@ def approve(store, cfg, rid, sha, user, ip, now=None, via="elaia", out=None, con
     rec.pop("reason", None)
     rec["approval"] = {"decision": "approved", "by": by, "at": entry["t"], "janus": "allowed", "sig": entry["sig"]}
     store.write(rec)
-    alert_clear()
     ok, text = start_deploy(rid)
     if not ok:
         rec["deploy"] = {"started": False, "error": text, "at": queue.stamp(queue.now_local())}
         store.write(rec)
-        alert_write("%s %s was approved but the deploy could not be started: %s"
+        alert.raise_("zeus-approve", "alert", "%s %s was approved but the deploy could not be started: %s"
                     % (rec["repo"].split("/")[-1], rec["version"] or sha[:7], text), now)
         out("zeus approve: approved and logged, but the deploy did not start: %s" % text)
         return 1

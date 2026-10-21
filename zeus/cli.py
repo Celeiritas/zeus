@@ -2,7 +2,7 @@
 import argparse
 import sys
 
-from zeus import approve, commands, config, deploy, init, queue, rollback, verify, version
+from zeus import alert, approve, commands, config, deploy, init, queue, rollback, verify, version
 
 DESCRIPTION = ("Zeus deploys a commit only after the owner approved it, and can put the previous approved commit back. "
                "He never fetches from anywhere but the allowlisted repositories, never deploys a branch, never runs a "
@@ -96,6 +96,8 @@ def build_parser():
     p.add_argument("--key-file", metavar="FILE", help="the secret.env holding ZEUS_LOG_KEY (default ~/.config/zeus/secret.env)")
     p.add_argument("--quiet", action="store_true", help="print only the bad lines and the total")
     p.set_defaults(func=verify.main)
+    p = sub.add_parser("seen", help="the owner has read Zeus's alert: clear it (Argus calms on his next refresh)")
+    p.set_defaults(func=alert.main_seen)
     p = sub.add_parser("init", help="make the log signing key (secret.env, mode 600) and the data folders; never overwrites")
     p.set_defaults(func=lambda a: init.run(print))
     for name, help_text, issue in LATER:

@@ -39,7 +39,7 @@ class CliTest(unittest.TestCase):
         self.assertIn("usage: zeus", r.stderr)
 
     def test_every_subcommand_from_the_design_exists(self):
-        wanted = {"queue", "request", "approve", "approve-release", "decline", "deploy", "deploy-run", "rollback", "status",
+        wanted = {"queue", "request", "approve", "approve-release", "decline", "deploy", "deploy-run", "seen", "rollback", "status",
                   "check-config", "init", "verify-log"}
         parser = cli.build_parser()
         names = {name for action in parser._subparsers._group_actions for name in action.choices}

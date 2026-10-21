@@ -220,7 +220,7 @@ class ApproveTest(ApproveBase):
             self.approve(rec["id"], sha)
         self.assertEqual(self.approve(rec["id"], sha), 0, self.out)
         self.assertEqual(self.store.read(rec["id"])["state"], "approved")
-        self.assertFalse(self.alert.exists(), "the alert clears on the yes")
+        self.assertTrue(self.alert.exists(), "the alert stays until a deploy succeeds or the owner marks it seen")
 
     def test_janus_garbage_and_hang_count_as_failed(self):
         sha, rec = self.pending()

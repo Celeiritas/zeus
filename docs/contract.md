@@ -90,6 +90,18 @@ One JSON object per line, keys sorted. `sig` is HMAC-SHA256, hex, over the line'
 - It does not prove that no line is missing. Deleting a whole line, or a whole month's file, leaves the others valid. The journal's git history in the config repo is what shows a removal.
 - It is only as safe as the key. Anyone who can read `secret.env` can sign a line, which is why the file must be mode 600 and stays on the server and in its backup, never in git.
 
+## 4b. The alert file (`~/.local/state/argus-ui/alerts/zeus.json`)
+The format every agent uses for Argus (argus-ui #8, as Hermes): `{ "job": "zeus-deploy" | "zeus-approve", "level": "alert" | "warn", "since": "<iso>", "message": "<one sentence>", "link": "throne" }`. `alert` makes Argus glare and counts in his badge; `warn` shows on the card only. A warning never replaces an alert that is still up.
+| When | Level | Message (example) |
+|---|---|---|
+| Janus could not verify an approval (the request is `held`) or a rollback | alert | `argus-ui 4.9.1: Janus could not verify the approval (tailscale whois failed); the request is held` |
+| approved, but `systemd-run` would not start the deploy | alert | `argus-ui 4.9.1 was approved but the deploy could not be started: …` |
+| a deploy failed after the install and the previous could not be restored | alert | `argus-ui 4.9.1 failed and 4.9.0 could not be restored` |
+| … and there was nothing to restore (the first deploy) | alert | `argus-ui 4.9.1 failed and there is no earlier approved commit to put back` |
+| a deploy failed and the previous was put back | warn | `argus-ui 4.9.1 failed and 4.9.0 was put back: …` |
+| a deploy failed before the install (nothing changed) | warn | `argus-ui 4.9.1 failed before the install; nothing was changed: …` |
+The file is removed by the next successful deploy and by `zeus seen` (the Throne's `seen` POST).
+
 ## 5. Zeus → Janus: `janus verify-approval`
 Zeus writes one JSON object to Janus's stdin: `{ "action": "deploy", "repo": "you/argus-ui", "sha": "<40 hex>", "user": "<login>" | null, "ip": "<client address>", "when": "<iso>" }`. From the Throne, `user` is the `Tailscale-User-Login` the plugin saw and Janus checks it equals the whois user; over ssh, `user` is `null` and Janus answers with the whois user (`"user"` in its JSON), which is what the log records. Exit 0 allowed · 10 refused · 2 (or anything else) failed; Zeus reads a JSON object on stdout when there is one (`reasons`: list of sentences, `node`: the device name), else every non-empty line of stdout and stderr is a reason. Janus is given 30 s. The program is `janus` on PATH (`ZEUS_JANUS` names another, for the tests only); the deploy is started with `systemd-run` (`ZEUS_SYSTEMD_RUN` likewise).
 
@@ -112,6 +124,7 @@ It makes a request for the current `main` (or takes the one already waiting for 
 | `zeus deploy <repo>` (ssh) | requested, approved, deploy started | as `request` and `approve` | usage |
 | `zeus status [--json]` | printed | `repos.json` broken (`deployed` is then empty) | — |
 | `zeus check-config [--file F]` | ok | errors | — |
+| `zeus seen` | the alert is cleared (or none was up) | — | — |
 | `zeus rollback <repo>` | approved, logged, the rollback run started | no previous, wrong target, no identity, cancelled, Janus refused or failed | usage |
 | `zeus deploy-run <id>` (internal) | deployed | not approved or not signed, refused before running, failed or rolled back (reason on the record) | usage |
 | `zeus verify-log [path] [--key-file F]` | every line ok | key or path missing | usage (10: a bad line) |

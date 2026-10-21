@@ -1,0 +1,6 @@
+{
+  "notes": "One approved deploy: fetch, detached checkout, scripts/deploy.sh --no-pull, health. Holds before the install, puts the previous commit back after it. The unit is zeus-deploy-<request id>; this is the card text for all of them.",
+  "code": "https://github.com/you/zeus/blob/main/zeus/deploy.py",
+  "log": "~/.local/share/zeus/log/deploy-<id>.log",
+  "writes_to": ["~/src/<repo> (Zeus's clone)", "~/.local/share/zeus/state/", "~/.local/share/zeus/log/", "~/.local/state/argus-ui/alerts/zeus.json"]
+}
