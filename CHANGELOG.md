@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.0 – 2026-10-21
+- `zeus approve <id> --sha <sha> --user <login> --ip <addr>` (issue #5, milestone 0.2 "the yes"): refuses unless the record is `pending` (or `held`), unexpired, the sha is the one the page showed, and the commit is still on `main` after a fresh fetch. Then `janus verify-approval` with `{action, repo, sha, user, ip, when}` on stdin: allowed → `approved`, a signed `deploy` line in the log, and `systemd-run --user --unit=zeus-deploy-<id> --collect -p CPUQuota=50% -p MemoryMax=1G -p IOWeight=50 zeus deploy-run <id>`; refused → stays `pending` with Janus's reasons on the record; failed → `held` plus the Argus alert file. A second approval of the same record is refused.
+- Fakes for the tests: `tests/fixtures/janus.py` and `tests/fixtures/systemd_run.py`, named through `ZEUS_JANUS` / `ZEUS_SYSTEMD_RUN`.
+
 ## 0.1.4 – 2026-10-21
 - `zeus request <repo>` (issue #4): a record now for the current `main` of an allowlisted repository, through the same admission as a Hermes message (fetch, on-main check, diff, supersede); `subject`, `version` and `changelog` lines come from the commit itself, `checks` is `none`. An unknown repository is refused without a fetch.
 - `zeus decline <id> --reason <word>`: `pending` → `declined`, one signed line in `log/approvals-YYYY-MM.jsonl`, no Janus call. `log.py` signs every decision line with HMAC-SHA256 over its canonical JSON (keys sorted, no spaces, without `sig`), keyed by `ZEUS_LOG_KEY`.

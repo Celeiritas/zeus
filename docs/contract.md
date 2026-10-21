@@ -33,10 +33,12 @@ Any file that is not valid JSON, not an object, or larger than 64 KB is refused 
   "verified": { "on_main": true, "at": "2026-10-21T09:00:12-06:00" },
   "approval": null, "deploy": null }
 ```
-- `state`: `pending` (in `queue/`), then one of `approved`, `deploying`, `deployed`, `failed`, `rolled-back`, `expired`, `superseded`, `declined`, `refused` (in `queue/.done/`, never deleted).
+- `state`: `pending` or `held` (in `queue/`), then one of `approved`, `deploying`, `deployed`, `failed`, `rolled-back`, `expired`, `superseded`, `declined`, `refused` (in `queue/.done/`, never deleted).
 - `reason` (text) is present on every non-pending state that stopped the request: `refused` (why), `superseded` ("replaced by 4.9.1", plus `superseded_by: {id, version, sha}`), `expired`, `declined` (the reason word).
 - `files` is the number of paths changed `previous..sha` (the commit's own change when `previous` is unknown; `null` when git could not say); `rules_changed` lists those among the repository's `rules`.
-- `approval`: `null` until decided; a decline sets `{ "decision": "declined", "by": {…}, "at": "…", "reason": "<word>" }`; approvals (#5) add their own shape.
+- `approval`: `null` until decided; a decline sets `{ "decision": "declined", "by": {…}, "at": "…", "reason": "<word>" }`; an approval sets `{ "decision": "approved", "by": { "user", "ip", "via", "node" }, "at": "…", "janus": "allowed", "sig": "<the log line's sig>" }`.
+- `janus`: after an approval attempt, `{ "verdict": "allowed" | "refused" | "failed", "reasons": [...], "at", "user", "ip" }`. A refusal leaves the record `pending` with the reasons kept for the card; a failure makes it `held` (still in `queue/`, approvable again once Janus answers) and writes the alert file `~/.local/state/argus-ui/alerts/zeus.json` (`{ "message", "link": "throne", "at" }`).
+- `deploy`: `null` until approved; then `{ "started": true, "unit": "zeus-deploy-<id>", "at" }` or `{ "started": false, "error": "…", "at" }` when `systemd-run` refused (the approval stands and is logged; the alert file says so).
 
 ## 3. `zeus status --json` (what the Throne plugin reads)
 ```json
@@ -60,13 +62,17 @@ One JSON object per line, keys sorted. `sig` is HMAC-SHA256, hex, over the line'
   "by": { "user": "<tailnet login or shell user>", "via": "elaia", "ip": "<address>" },
   "reason": "not-now", "janus": "not asked", "zeus": "0.1.4", "sig": "<64 hex>" }
 ```
-`action` is `decline` (this issue) or `deploy`, `rollback`, `release` (#5, #9, #12, which add `janus: "allowed"` and the node). `zeus verify-log` (#7) re-checks every line; the journal copy in the private config repo carries the signatures with it.
+`action` is `decline` or `deploy` (`janus: "allowed"`, `by.node` from Janus's answer when it gives one); `rollback` and `release` follow (#9, #12). `zeus verify-log` (#7) re-checks every line; the journal copy in the private config repo carries the signatures with it.
 
-## 5. Command line, exit codes
+## 5. Zeus → Janus: `janus verify-approval`
+Zeus writes one JSON object to Janus's stdin: `{ "action": "deploy", "repo": "you/argus-ui", "sha": "<40 hex>", "user": "<login>", "ip": "<client address>", "when": "<iso>" }`. Exit 0 allowed · 10 refused · 2 (or anything else) failed; Zeus reads a JSON object on stdout when there is one (`reasons`: list of sentences, `node`: the device name), else every non-empty line of stdout and stderr is a reason. Janus is given 30 s. The program is `janus` on PATH (`ZEUS_JANUS` names another, for the tests only); the deploy is started with `systemd-run` (`ZEUS_SYSTEMD_RUN` likewise).
+
+## 6. Command line, exit codes
 | Command | 0 | 1 | 2 |
 |---|---|---|---|
 | `zeus queue` | every request handled | `repos.json` broken (requests refused, folder still emptied) | — |
 | `zeus request <repo>` | a pending record was made | refused or nothing fetched (unknown repository, fetch failed, not on main) | usage |
 | `zeus decline <id> --reason <word>` | declined | no such request, not pending, log not writable | bad reason word |
+| `zeus approve <id> --sha <sha> --user <login> --ip <addr>` | approved, logged, deploy started | refused (not pending, expired, wrong sha, no longer on main, Janus refused), held (Janus failed), or approved but the deploy did not start | usage |
 | `zeus status [--json]` | printed | `repos.json` broken (`deployed` is then empty) | — |
 | `zeus check-config [--file F]` | ok | errors | — |
