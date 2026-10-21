@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.2 – 2026-10-21
+- `zeus verify-log [<file or folder>] [--key-file F] [--quiet]` (issue #7): recomputes the HMAC of every line in `approvals-*.jsonl`, Zeus's own or the journal copy in the config repo, and prints ok or bad (no sig, not JSON, sig does not match) per line with a total; exit 10 when any line is bad. `docs/contract.md` says what a good signature proves (the line is unchanged since signing) and what it does not (who approved, that no line was deleted).
+
 ## 0.2.1 – 2026-10-21
 - The ssh approval path (issue #6): `ssh {{SSH}} 'zeus deploy argus-ui'` makes a request for the current `main` (or takes the one already waiting) and approves it; `ssh {{SSH}} 'zeus approve <id>'` approves one from the list. The address comes from `SSH_CONNECTION`, the user from Janus's whois (Janus gets `user: null`), and the owner types `yes` to the prompt "Deploy <repo> <version> (<sha7>)?"; anything else cancels before Janus is asked. `--user`/`--ip` in an ssh session are refused; outside one, `--user`, `--ip` and `--sha` (the Throne's call) are required.
 - A `held` record now expires, counts as a duplicate and is superseded like a pending one.
