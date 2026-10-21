@@ -14,7 +14,7 @@ On the server Zeus is one file, a Python 3 zipapp with no dependencies (`bash sc
 `docs/design.md` is the design: decisions, the allowlist (`repos.json`), the request record and its states, approval (page, ssh, signing), the deploy and what happens when it fails, config deploys and quarantine releases, the Throne page and its accessibility rules, logs, and the build order. `zeus/` is the package, `plugin/` the Elaia page, `units/` the systemd units, `scripts/` build, install and the privacy check, `tests/` the tests (`bash tests/run.sh`, with a fake git remote, a fake `janus` and a fake `systemd-run`).
 
 ## Where it stands
-Version 0.1.0 is the skeleton (issue #2): `zeus check-config` reads and explains the allowlist, `zeus init` makes the log signing key, and the other commands exist but say which issue builds them. The build order is `docs/design.md` §13.
+Version 0.1.x is milestone 0.1, "the queue": `zeus check-config` reads and explains the allowlist (#2), `zeus init` makes the log signing key (#2), `zeus queue` turns Hermes's request messages into records after checking `main` for himself (#3); the other commands exist but say which issue builds them. The build order is `docs/design.md` §13.
 
 ```
 bash tests/run.sh                      # the tests (Python 3, bash, git; nothing is installed)
