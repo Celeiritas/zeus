@@ -1,0 +1,26 @@
+# Zeus – notes for Claude Code
+
+Zeus is the throne: he deploys a commit only after the owner approved it, and he can put the previous approved commit back. **He never fetches from anywhere but the allowlisted repositories, never deploys a branch, never runs a command from a message, a page or a config, and never pushes anywhere.** `docs/design.md` is the spec; read the section an issue names before changing anything. The Hermes side (the request message) is [hermes](https://github.com/Celeiritas/hermes) `docs/files.md`; the identity check is [janus](https://github.com/Celeiritas/janus) `janus verify-approval` (`docs/contract.md` there).
+
+## Map
+- `zeus/` – the package, Python 3 standard library only (it calls `git`, `janus`, `hermes`, `systemd-run`, `systemctl --user`, `tailscale`). `cli.py` is the command line (`queue`, `request`, `approve`, `approve-release`, `decline`, `deploy-run`, `rollback`, `status`, `check-config`, `init`, `verify-log`); each issue adds its part. `config.py` reads and validates `repos.json` (placeholders from `~/.config/leafy/realm.json`). `queue.py` turns Hermes's request messages into records and keeps their states. `approve.py` checks freshness, calls Janus and writes the signed log line. `deploy.py` is the fetch → checkout → `scripts/deploy.sh --no-pull` → health run, plus hold vs rollback. `log.py` the monthly JSONL logs and the HMAC.
+- `scripts/build.sh` → `dist/zeus`, a zipapp with a `python3` shebang, installed as `~/.local/bin/zeus`. `scripts/check-private.sh` and `scripts/install-hooks.sh` are copied unchanged from argus-ui.
+- `plugin/` – the Elaia `server` plugin `throne` (pill "Zeus · Throne"), with the hold-to-confirm button. `units/` – `zeus-queue.path` + `.service` (one-shot) and argus-ui's limits drop-in. `examples/` – `repos.example.json` and `deploy.sh.example`, placeholders only.
+- `tests/` – stdlib `unittest`, `bash tests/run.sh`. Fixtures: local bare git repositories as remotes, a fake `janus` (answers from a fixture file), a fake `systemd-run` that runs the command inline, a fake `tailscale`. Every state transition, expiry, superseding, hold vs rollback and `verify-log` has a test.
+
+## Test before you say it works
+`bash tests/run.sh` (python3, bash, git). `bash scripts/build.sh && ./dist/zeus --version` must work on a clean Linux checkout. Add a test for every state transition and every refusal reason.
+
+## Rules
+- **`main` and `scripts/deploy.sh` are fixed in code.** No config field names a branch or a script. `check-config` fails a `url` that is not `https://github.com/<owner>/<name>.git` or an ssh alias for a private repository.
+- **Zeus verifies for himself.** A request message is a hint; before showing and again before deploying, `git fetch origin main` + `git merge-base --is-ancestor <sha> origin/main`. Never deploy from the message's say-so.
+- **An approval is for one commit, once.** Refuse unless the record is `pending`, unexpired, not superseded, and the `sha` matches what the page showed. Then `janus verify-approval`; exit 0 allowed · 10 refused (show the reasons) · 2 failed (hold, alert).
+- **Deploys run detached** (`systemd-run --user --unit=zeus-deploy-<id>`), one at a time (`flock`), because the deploy script may restart the very service that called Zeus.
+- **Hold before `ZEUS_STAGE=install`, roll back after it.** A failure before the install changed nothing; one after it (or a failed health check) redeploys `state.previous`. Never retry on your own.
+- **Health is from a fixed list**: an `http` URL on 127.0.0.1, a `service` unit, or `<agent> check-config` for hermes/janus/zeus. Never a free command.
+- **Logs are signed.** Every approval line carries an HMAC over its canonical JSON (`ZEUS_LOG_KEY` in `~/.config/zeus/secret.env`, mode 600); `verify-log` re-checks them. Zeus never pushes: the journal into the private repo is Mnemosyne's job.
+- **The Throne page is a list first.** Keyboard path through every card and button, hold-to-confirm works with Space/Enter too, no sideways scroll at 375 px, reduced motion = countdown words only, state always icon + word (never colour alone). Tests cover all four.
+- **Placeholders, never real names.** Public text says `{{SERVER}}`, `{{PC}}`, `{{PHONE}}`, `{{SSH}}`, `{{HOME_PC}}`, `{{HOME_SERVER}}`. Run `bash scripts/check-private.sh` before every push (`bash scripts/install-hooks.sh` once per clone). Your own notes go in `CLAUDE.local.md` (gitignored).
+- **Branches are `<area>/<topic>`** (`queue/records`, `throne/page`). One issue → one pull request. The owner merges.
+- **Bump `VERSION` and add a `CHANGELOG.md` entry** for every change that ships. Before 1.0 the minor number is the milestone (v0.1 = the queue, v0.2 = the yes, v0.3 = the deploy, v0.4 = the throne), so work inside a milestone bumps the patch and the first change of the next milestone bumps the minor.
+- Never commit `secret.env`, deploy keys, `queue/`, `state/`, logs, or the owner's icons.
