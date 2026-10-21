@@ -19,7 +19,8 @@ USER = "dax@" + "example.com"
 IP = "203.0.113.5"
 
 
-class ApproveTest(unittest.TestCase):
+class ApproveBase(unittest.TestCase):
+    """A temporary HOME, a bare remote, the fakes, and the helpers; no tests of its own (test_ssh builds on it)."""
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -64,6 +65,8 @@ class ApproveTest(unittest.TestCase):
     def runs(self):
         return [json.loads(l) for l in self.run_log.read_text().splitlines()] if self.run_log.exists() else []
 
+
+class ApproveTest(ApproveBase):
     # allowed
     def test_allowed_approves_logs_and_starts_the_deploy(self):
         sha, rec = self.pending()
@@ -268,7 +271,8 @@ class ApproveCommandTest(unittest.TestCase):
         self.home = Path(self.tmp.name) / "home"
         self.home.mkdir()
         (self.home / "repos.json").write_text(EXAMPLE.read_text())
-        self.env = dict(os.environ, HOME=str(self.home), USERPROFILE=str(self.home),
+        base = {k: v for k, v in os.environ.items() if k != "SSH_CONNECTION"}   # the server runs the tests over ssh
+        self.env = dict(base, HOME=str(self.home), USERPROFILE=str(self.home),
                         ZEUS_DATA=str(self.home / "data"), ZEUS_SECRET=str(self.home / "secret.env"),
                         ZEUS_CONFIG=str(self.home / "repos.json"), LEAFY_REALM=str(self.home / "none.json"))
 
@@ -276,13 +280,16 @@ class ApproveCommandTest(unittest.TestCase):
         return subprocess.run([sys.executable, "-m", "zeus", "approve", *args], cwd=ROOT, capture_output=True, text=True,
                               env=self.env)
 
-    def test_flags_are_required(self):
+    def test_the_throne_must_give_user_ip_and_sha(self):
         r = self.run_cli("some-id")
-        self.assertEqual(r.returncode, 2)
-        self.assertIn("--sha", r.stderr)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no identity to check", r.stderr)
         r = self.run_cli("some-id", "--sha", "a" * 40, "--user", "me")
-        self.assertEqual(r.returncode, 2)
-        self.assertIn("--ip", r.stderr)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no identity to check", r.stderr)
+        r = self.run_cli("some-id", "--user", "me", "--ip", IP)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("--sha is required from the Throne", r.stderr)
 
     def test_unknown_record(self):
         r = self.run_cli("nope", "--sha", "a" * 40, "--user", "me", "--ip", IP)

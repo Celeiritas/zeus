@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1 – 2026-10-21
+- The ssh approval path (issue #6): `ssh {{SSH}} 'zeus deploy argus-ui'` makes a request for the current `main` (or takes the one already waiting) and approves it; `ssh {{SSH}} 'zeus approve <id>'` approves one from the list. The address comes from `SSH_CONNECTION`, the user from Janus's whois (Janus gets `user: null`), and the owner types `yes` to the prompt "Deploy <repo> <version> (<sha7>)?"; anything else cancels before Janus is asked. `--user`/`--ip` in an ssh session are refused; outside one, `--user`, `--ip` and `--sha` (the Throne's call) are required.
+- A `held` record now expires, counts as a duplicate and is superseded like a pending one.
+
 ## 0.2.0 – 2026-10-21
 - `zeus approve <id> --sha <sha> --user <login> --ip <addr>` (issue #5, milestone 0.2 "the yes"): refuses unless the record is `pending` (or `held`), unexpired, the sha is the one the page showed, and the commit is still on `main` after a fresh fetch. Then `janus verify-approval` with `{action, repo, sha, user, ip, when}` on stdin: allowed → `approved`, a signed `deploy` line in the log, and `systemd-run --user --unit=zeus-deploy-<id> --collect -p CPUQuota=50% -p MemoryMax=1G -p IOWeight=50 zeus deploy-run <id>`; refused → stays `pending` with Janus's reasons on the record; failed → `held` plus the Argus alert file. A second approval of the same record is refused.
 - Fakes for the tests: `tests/fixtures/janus.py` and `tests/fixtures/systemd_run.py`, named through `ZEUS_JANUS` / `ZEUS_SYSTEMD_RUN`.

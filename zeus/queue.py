@@ -15,6 +15,7 @@ from zeus import config, init
 MESSAGE_TYPE = "deploy-request"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 PENDING = "pending"
+WAITING = ("pending", "held")      # held: approved by the owner, Janus failed to answer; approvable again
 # Terminal states live in queue/.done/ (never deleted); only pending records sit in queue/ itself.
 DONE = ("refused", "superseded", "expired", "declined", "deployed", "failed", "rolled-back")
 MESSAGE_MAX = 64 * 1024
@@ -71,15 +72,16 @@ class Store:
                 return json.loads(p.read_text(encoding="utf-8"))
         return None
 
-    def pending(self):
-        """The pending records, newest first (by id, which starts with the time)."""
+    def pending(self, states=("pending",)):
+        """The records in queue/ in those states, newest first (by id, which starts with the time). WAITING adds held
+        ones (Janus could not answer): they still expire, still count as a duplicate and are still superseded."""
         recs = []
         for p in sorted(self.queue.glob("*.json"), reverse=True):
             try:
                 rec = json.loads(p.read_text(encoding="utf-8"))
             except ValueError:
                 continue
-            if rec.get("state") == PENDING:
+            if rec.get("state") in states:
                 recs.append(rec)
         return recs
 
@@ -271,7 +273,7 @@ def admit(store, cfg, msg, now, name="request"):
     if repo is None:
         return store.write(_record(rid, msg, now, cfg, state="refused",
                                    reason="%s is not in repos.json; nothing was fetched" % repo_key))
-    for older in store.pending():
+    for older in store.pending(WAITING):
         if older["repo"] == repo_key and older["sha"] == sha:
             return store.write(_record(rid, msg, now, cfg, state="refused",
                                        reason="already waiting as %s; nothing was fetched" % older["id"]))
@@ -286,7 +288,7 @@ def admit(store, cfg, msg, now, name="request"):
     files, paths = fetch.changed(msg.get("previous"), sha)
     rec["files"] = files
     rec["rules_changed"] = [p for p in paths if p in repo.rules]
-    for older in store.pending():
+    for older in store.pending(WAITING):
         if older["repo"] == repo_key and older["id"] != rid:
             older["state"] = "superseded"
             older["superseded_by"] = {"id": rid, "version": rec["version"], "sha": sha}
@@ -314,7 +316,7 @@ def expire(store, now=None, out=None):
     """Pending records past their expiry become expired (enforced here and at approval time; no timer)."""
     now = now or now_local()
     gone = []
-    for rec in store.pending():
+    for rec in store.pending(WAITING):
         t = parse_time(rec.get("expires"))
         if t is not None and now >= t:
             rec["state"] = "expired"

@@ -35,11 +35,22 @@ def main():
     except ValueError:
         print(json.dumps({"verdict": "failed", "reasons": ["request is not JSON"]}))
         return 2
+    # ZEUS_FAKE_JANUS_NODES: {"<ip>": ["<node>", "<whois user>"]} - the approved devices. When set, whois decides:
+    # an address not in it is refused, and a user given in the request must equal the whois user (as Janus checks).
+    nodes = json.loads(os.environ.get("ZEUS_FAKE_JANUS_NODES") or "null")
+    node, who = "phone", req.get("user") or "owner@example.com"
+    if nodes is not None and mode == "allowed":
+        if req.get("ip") not in nodes:
+            mode = "refused"
+        else:
+            node, who = nodes[req["ip"]]
+            if req.get("user") not in (None, who):
+                mode = "refused"
     reasons = {"allowed": [], "refused": ["%s is not in approvers.zeus.users" % req.get("user"),
                                          "node for %s is not in approvers.zeus.nodes" % req.get("ip")],
                "failed": ["tailscale whois failed"]}[mode]
-    print(json.dumps({"verdict": mode, "reasons": reasons, "node": "phone" if mode == "allowed" else None,
-                      "action": req.get("action")}))
+    print(json.dumps({"verdict": mode, "reasons": reasons, "node": node if mode == "allowed" else None,
+                      "user": who if mode == "allowed" else None, "action": req.get("action")}))
     return EXIT[mode]
 
 
