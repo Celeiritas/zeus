@@ -13,4 +13,16 @@ On the server Zeus is one file, a Python 3 zipapp with no dependencies (`bash sc
 ## Repository
 `docs/design.md` is the design: decisions, the allowlist (`repos.json`), the request record and its states, approval (page, ssh, signing), the deploy and what happens when it fails, config deploys and quarantine releases, the Throne page and its accessibility rules, logs, and the build order. `zeus/` is the package, `plugin/` the Elaia page, `units/` the systemd units, `scripts/` build, install and the privacy check, `tests/` the tests (`bash tests/run.sh`, with a fake git remote, a fake `janus` and a fake `systemd-run`).
 
+## Where it stands
+Version 0.1.0 is the skeleton (issue #2): `zeus check-config` reads and explains the allowlist, `zeus init` makes the log signing key, and the other commands exist but say which issue builds them. The build order is `docs/design.md` §13.
+
+```
+bash tests/run.sh                      # the tests (Python 3, bash, git; nothing is installed)
+bash scripts/build.sh                  # -> dist/zeus, one file
+./dist/zeus check-config --file examples/repos.example.json
+bash scripts/install.sh                # on the server: ~/.local/bin/zeus + the systemd units
+zeus init                              # once: ~/.config/zeus/secret.env (mode 600) and the data folders
+```
+Then copy your `repos.json` to `~/.config/zeus/` (the private config repo's deploy does this later) and run `zeus check-config`.
+
 Public text uses placeholders (`{{SERVER}}`, `{{PC}}`, `{{PHONE}}`, `{{SSH}}`, `{{HOME_PC}}`, `{{HOME_SERVER}}`) and never a real device, user, path or host; `scripts/check-private.sh` enforces that before every push. MIT licence.

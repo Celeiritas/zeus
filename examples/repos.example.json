@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "expire_hours": 72,
+  "deploy_timeout_s": 900,
+  "health_wait_s": 30,
+  "repos": {
+    "you/argus-ui": { "url": "https://github.com/you/argus-ui.git",
+                      "path": "{{HOME_SERVER}}/src/argus-ui", "health": { "http": "http://127.0.0.1:8095/api/health" },
+                      "services": ["argus-ui"] },
+    "you/hermes":   { "url": "https://github.com/you/hermes.git",
+                      "path": "{{HOME_SERVER}}/src/hermes", "health": { "exec": "hermes check-config" } },
+    "you/janus":    { "url": "https://github.com/you/janus.git",
+                      "path": "{{HOME_SERVER}}/src/janus", "health": { "exec": "janus check-config" } },
+    "you/zeus":     { "url": "https://github.com/you/zeus.git",
+                      "path": "{{HOME_SERVER}}/src/zeus", "health": { "exec": "zeus check-config" } },
+    "you/realm":    { "url": "git@github-realm-zeus:you/realm.git",
+                      "key": "~/.config/zeus/keys/realm", "path": "{{HOME_SERVER}}/src/realm",
+                      "private": true, "rules": ["zeus/repos.json", "janus/routes.json", "janus/doors.json", "hermes/routes.json"],
+                      "health": { "exec": "janus check-config" } }
+  }
+}
