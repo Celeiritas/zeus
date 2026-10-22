@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.3 – 2026-10-21
+- **Fix: Zeus now tells Janus how the approval came in.** The `verify-approval` request carries `"via": "ssh"` or `"via": "elaia"` (janus `docs/contract.md`), for `approve`/`deploy` and for `rollback`. Without it Janus took every request for the page's, so the first real `ssh {{SSH}} 'zeus deploy argus-ui'` was refused with "A request from the page must name the user it saw" (nothing was approved or deployed)
+- Tests: the fake Janus applies the real rule (no user and not ssh → refused), and the request Zeus sends is checked with its `via` on the page, ssh and rollback paths
+
 ## 0.3.2 – 2026-10-21
 - The alert file in the agents' common format (issue #10; argus-ui #8, as Hermes): `~/.local/state/argus-ui/alerts/zeus.json` = `{ job, level, since, message, link: "throne" }`. `alert` (Argus glares) for a held approval or rollback, a deploy that could not be started, and a failed deploy whose previous could not be restored ("argus-ui 4.9.1 failed and 4.9.0 could not be restored"); `warn` (card text only) for a deploy that failed before the install or was rolled back. A warning never hides an alert. Cleared by the next successful deploy or by the new `zeus seen`; an approval no longer clears it.
 - Argus task cards: `units/agents/zeus-queue.json` and `zeus-deploy.json` (`notes`, `code`, `log`, `writes_to`), installed into `~/.config/argus-ui/agents/` by `scripts/install.sh`.

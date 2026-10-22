@@ -67,7 +67,7 @@ class SshTest(ApproveBase):
         self.assertEqual(got["state"], "approved")
         self.assertEqual(got["approval"]["by"], {"user": OWNER, "ip": PHONE_IP, "via": "ssh", "node": "phone"})
         self.assertEqual(self.janus_requests()[0], {"action": "deploy", "repo": "you/app", "sha": sha, "user": None,
-                                                    "ip": PHONE_IP, "when": "2026-10-21T09:03:12-06:00"})
+                                                    "ip": PHONE_IP, "when": "2026-10-21T09:03:12-06:00", "via": "ssh"})
         entry = log.entries(self.store)[0][2]
         self.assertEqual(entry["by"]["via"], "ssh")
         self.assertEqual(entry["by"]["user"], OWNER, "the user in the log is Janus's whois answer, never a flag")

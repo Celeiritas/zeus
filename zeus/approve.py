@@ -138,7 +138,8 @@ def approve(store, cfg, rid, sha, user, ip, now=None, via="elaia", out=None, con
     if confirm is not None and not confirm(rec):
         out("zeus approve: cancelled; nothing was approved.")
         return 1
-    request = {"action": "deploy", "repo": rec["repo"], "sha": sha, "user": user, "ip": ip, "when": queue.stamp(now)}
+    request = {"action": "deploy", "repo": rec["repo"], "sha": sha, "user": user, "ip": ip, "when": queue.stamp(now),
+               "via": via}
     janus = Janus(request).run()
     rec["janus"] = {"verdict": janus.verdict, "reasons": janus.reasons, "at": queue.stamp(now), "user": user, "ip": ip}
     if janus.verdict == "refused":

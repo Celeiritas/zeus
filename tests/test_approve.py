@@ -83,7 +83,7 @@ class ApproveTest(ApproveBase):
         self.assertTrue((self.store.queue / (rec["id"] + ".json")).is_file(), "approved is not terminal: it stays in queue/")
         # Janus was asked exactly what the design says, nothing more
         self.assertEqual(self.janus_requests(), [{"action": "deploy", "repo": "you/app", "sha": sha, "user": USER, "ip": IP,
-                                                  "when": "2026-10-21T09:03:12-06:00"}])
+                                                  "when": "2026-10-21T09:03:12-06:00", "via": "elaia"}])
         # the signed line
         rows = log.entries(self.store)
         self.assertEqual(len(rows), 1)
