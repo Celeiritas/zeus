@@ -37,6 +37,12 @@ def main():
         return 2
     # ZEUS_FAKE_JANUS_NODES: {"<ip>": ["<node>", "<whois user>"]} - the approved devices. When set, whois decides:
     # an address not in it is refused, and a user given in the request must equal the whois user (as Janus checks).
+    # As the real Janus: "via" is elaia unless the request says ssh, and only an ssh request may leave the user out.
+    if mode == "allowed" and req.get("user") is None and req.get("via", "elaia") != "ssh":
+        print(json.dumps({"verdict": "refused", "node": None, "user": None, "action": req.get("action"),
+                          "reasons": ["A request from the page must name the user it saw; only an ssh approval "
+                                      "leaves the user to Janus."]}))
+        return 10
     nodes = json.loads(os.environ.get("ZEUS_FAKE_JANUS_NODES") or "null")
     node, who = "phone", req.get("user") or "owner@example.com"
     if nodes is not None and mode == "allowed":

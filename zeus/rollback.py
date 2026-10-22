@@ -58,7 +58,7 @@ def rollback(store, cfg, name, who, sha=None, now=None, out=None, confirm=None):
            "expires": queue.stamp(now + timedelta(minutes=EXPIRES_MIN)),
            "verified": {"on_main": None, "at": None}, "approval": None, "deploy": None}
     request = {"action": "rollback", "repo": key, "sha": prev["sha"], "user": who.user, "ip": who.ip,
-               "when": queue.stamp(now)}
+               "when": queue.stamp(now), "via": who.via}
     janus = approve.Janus(request).run()
     rec["janus"] = {"verdict": janus.verdict, "reasons": janus.reasons, "at": queue.stamp(now), "user": who.user, "ip": who.ip}
     if janus.verdict != "allowed":

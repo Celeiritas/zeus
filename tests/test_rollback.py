@@ -141,6 +141,7 @@ class RollbackTest(DeployBase):
         self.assertEqual(rec["from"], {"sha": second, "version": "4.9.1"})
         self.assertEqual(self.janus_requests()[-1]["action"], "rollback")
         self.assertIsNone(self.janus_requests()[-1]["user"])
+        self.assertEqual(self.janus_requests()[-1]["via"], "ssh", "without via Janus takes it for the page and refuses")
         entry = [e for _, _, e in log.entries(self.store) if e["action"] == "rollback"][0]
         self.assertTrue(log.check(entry))
         self.assertEqual(entry["by"]["user"], OWNER)
