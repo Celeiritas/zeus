@@ -1,6 +1,9 @@
 /* Zeus · Throne. Elaia's tokens (--card, --line, --snow, --powder, --ok, --bad, --s*, --fs-*); storm gold is Zeus's hue.
    The tablet, throne and stage-node art waits for the owner's approval (argus-ui docs/ui-plan.md §13): plain shapes until then. */
 .throne{--storm:#E0B341;max-width:880px;display:grid;gap:var(--s6);padding-bottom:var(--s8)}
+.throne .tcols,.throne .tcol{display:grid;gap:var(--s6);align-content:start;min-width:0}
+/* wide screens: what needs you (waiting, deploying) on the left, what is (deployed now, history) on the right */
+@media (min-width:1200px){.throne{max-width:1600px}.throne .tcols{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
 .throne h3{margin:0 0 var(--s3);font-size:var(--fs-h2);font-weight:600;color:var(--snow)}
 .throne h4{margin:0;font-size:var(--fs-body);font-weight:600;color:var(--snow);overflow-wrap:anywhere}
 .throne h4 b{color:var(--storm)}

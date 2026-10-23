@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1 – 2026-10-23
+- **The Throne on wide screens** (1200 px and up): what needs you (Waiting for your yes, Deploying) on the left, what is (Deployed now, History) on the right, up to 1600 px. Phones keep one column
+- **Argus reacts** (Elaia 4.20 and later, `api.argus`): he nods when a Deploy or Roll back hold went through and winces when Zeus said no; when a deploy you were watching ends he nods if it is live and winces if it failed or was rolled back. On an older Elaia nothing changes
+- Tests: `tests/throne/throne.test.js` checks the two columns, one column at 375 px, and the nod (skipped on an Elaia older than 4.20)
+
 ## 0.4.0 – 2026-10-23
 - **The Throne** (`plugin/`, Elaia server plugin `throne`, issue #11): the page where you decide what gets deployed and see what runs, laid out as a list first.
   - **Waiting for your yes:** one card per request: repository, version, commit (linked), subject, changelog lines, checks, files changed, expiry, and the badge "Changes the realm's own rules" naming the files. **Deploy <repo> <version>** is a 3-second hold (pointer, Space or Enter; a screen reader's click arms it and a second click confirms); **Decline** asks for a reason word; **Check main again** asks Zeus to fetch `main`.
