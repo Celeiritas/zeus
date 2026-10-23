@@ -15,3 +15,20 @@ jobs:
         run: bash scripts/build.sh && ./dist/zeus --version
       - name: Tests
         run: bash tests/run.sh
+  throne-page:
+    # The Throne page in a real browser, under Elaia (argus-ui's test runner), against a fake zeus: tests/throne/.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+        with:
+          repository: Celeiritas/argus-ui
+          path: argus-ui
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Playwright and Chromium
+        working-directory: argus-ui
+        run: npm install --no-audit --no-fund && npx playwright install --with-deps chromium
+      - name: The Throne page
+        run: bash tests/throne/run.sh argus-ui

@@ -22,5 +22,12 @@ if [ $UNITS = 1 ]; then
   A="${ARGUS_REGISTRY:-$HOME/.config/argus-ui/agents}"; mkdir -p "$A"   # the task-card notes Argus reads
   install -m 644 units/agents/zeus-queue.json units/agents/zeus-deploy.json "$A/"
   echo "installed the Argus cards for zeus-queue and zeus-deploy in $A"
+  # the Throne: Elaia's server plugin (docs/design.md §9). An older copy is set aside, never deleted; a new plugin.py
+  # loads only when Elaia starts, so Elaia restarts if it is running.
+  E="$HOME/.config/argus-ui"; P="$E/plugins/throne"; mkdir -p "$E/plugins"
+  if [ -d "$P" ]; then mv "$P" "$E/.set-aside-$(date +%Y%m%d-%H%M%S)-throne"; fi
+  cp -r plugin "$P"; rm -rf "$P/__pycache__"
+  echo "installed the Throne plugin in $P (the old one, if any, is in $E/.set-aside-*-throne)"
+  systemctl --user try-restart argus-ui && echo "restarted Elaia (argus-ui) so the Throne loads: <base>/throne"
 fi
 [ -f "$HOME/.config/zeus/secret.env" ] || echo "next: zeus init (makes ~/.config/zeus/secret.env), then copy repos.json to ~/.config/zeus/"
