@@ -159,6 +159,13 @@ A `server` plugin shipped in `plugin/`, installed to `~/.config/argus-ui/plugins
 
 **Why it's built this way.** The request card shows exactly what will run (repo, commit, changes, tests) before the one irreversible gesture, and the result appears where the gesture happened (visibility of system status; Nielsen 1994). Rollback is one hold because the cost of a bad deploy is paid by the same page you'd use to fix it. The hold is the friction, not a dialog: a confirm that repeats the card's text would be clicked through (Akhawe & Felt 2013), while three seconds with the card still in view is time to read it.
 
+**As built in 0.4.0** (`plugin/`, issue #11):
+- The page uses argus-ui's shared `holdConfirm` and `fx` (argus-ui 4.18, `docs/fx.md` there): the hold, the bolt on an approval and the crumble on a decline come from Elaia, so the Throne can't drift from the other pages. A click that cannot be held (a screen reader's or a switch's) arms the button and a second click within 5 s confirms.
+- Reads change nothing: a waiting request past its expiry is *shown* as expired, and Zeus records it when he next lists the queue or is asked to approve it. `Re-check` is labelled **Check main again** and runs `zeus request <repo>` (Zeus fetches `main` himself); asking `hermes-github` first is left to Hermes's hourly check.
+- The rules badge names the changed rules files; the inline diff of those files is not built yet (the record carries only their names).
+- The tablet, throne and stage-node art waits for the owner's approval (argus-ui `docs/ui-plan.md` §13); until then the page uses plain cards and chips.
+- Tests: `tests/test_throne_plugin.py` (reads, stages, Home's status, the exact `zeus` arguments, refusals) and `tests/throne/throne.test.js` in a browser under Elaia against `tests/throne/fake_zeus.py` (`bash tests/throne/run.sh <argus-ui checkout>`; the `throne-page` CI job).
+
 ## 10. Resource use on the server
 | When | What runs | Cost |
 |---|---|---|

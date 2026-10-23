@@ -1,0 +1,53 @@
+/* Zeus · Throne. Elaia's tokens (--card, --line, --snow, --powder, --ok, --bad, --s*, --fs-*); storm gold is Zeus's hue.
+   The tablet, throne and stage-node art waits for the owner's approval (argus-ui docs/ui-plan.md §13): plain shapes until then. */
+.throne{--storm:#E0B341;max-width:880px;display:grid;gap:var(--s6);padding-bottom:var(--s8)}
+.throne h3{margin:0 0 var(--s3);font-size:var(--fs-h2);font-weight:600;color:var(--snow)}
+.throne h4{margin:0;font-size:var(--fs-body);font-weight:600;color:var(--snow);overflow-wrap:anywhere}
+.throne h4 b{color:var(--storm)}
+.throne ul,.throne ol{list-style:none;margin:0;padding:0}
+.throne .meta{color:var(--powder);font-size:var(--fs-sec)}
+.throne p{margin:0}
+.throne button{min-height:var(--hit);padding:0 var(--s4);font-size:var(--fs-sec)}
+.throne .tline{font-size:var(--fs-body);color:var(--snow)}
+.throne .empty{color:var(--powder);font-size:var(--fs-sec)}
+.throne a{color:var(--snow)}
+.throne code{font-size:var(--fs-meta);overflow-wrap:anywhere}
+
+/* a card: waiting tablets, deploys, live rows and history rows share it */
+.throne .tablet,.throne .run,.throne .live,.throne .hrow{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:var(--s4);display:grid;gap:var(--s2);min-width:0}
+.throne .tablets,.throne .runs,.throne .lives,.throne .hist{display:grid;gap:var(--s3)}
+.throne .tablet{border-top:3px solid var(--storm)}
+.throne .thead{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:var(--s2)}
+.throne .subj{font-size:var(--fs-sec);color:var(--snow);overflow-wrap:anywhere}
+.throne .clog{font-size:var(--fs-sec);color:var(--powder);display:grid;gap:var(--s1)}
+.throne .clog li::before{content:"· ";color:var(--storm)}
+.throne .facts{display:flex;flex-wrap:wrap;gap:var(--s2) var(--s4);align-items:center}
+.throne .rules{font-size:var(--fs-sec);color:var(--snow);background:rgba(224,179,65,.12);border:1px solid var(--storm);border-radius:8px;padding:var(--s2) var(--s3)}
+.throne .note{font-size:var(--fs-sec);color:var(--snow);border-left:3px solid var(--storm);padding-left:var(--s3)}
+.throne .note.bad{border-color:var(--bad)}.throne .note ul{list-style:disc;padding-left:var(--s4)}
+.throne .acts{display:flex;flex-wrap:wrap;gap:var(--s2);margin-top:var(--s1)}
+.throne .go,.throne .back{border-color:var(--storm);color:var(--snow)}
+.throne .why fieldset{border:1px solid var(--line);border-radius:8px;margin:0;padding:var(--s2) var(--s3);display:flex;flex-wrap:wrap;gap:var(--s1) var(--s3)}
+.throne .why legend{font-size:var(--fs-sec);color:var(--snow);padding:0 var(--s1)}
+.throne .why label{display:inline-flex;align-items:center;gap:var(--s2);min-height:var(--hit);font-size:var(--fs-sec)}
+
+/* chips: an icon and a word, so colour is never the only sign */
+.throne .chip{display:inline-flex;align-items:center;gap:var(--s1);font-size:var(--fs-meta);color:var(--snow);border:1px solid var(--line);border-radius:999px;padding:2px var(--s2);white-space:nowrap}
+.throne .s-success,.throne .s-deployed{border-color:var(--ok)}.throne .s-failure,.throne .s-failed,.throne .s-refused{border-color:var(--bad)}
+.throne .s-pending,.throne .s-held,.throne .s-deploying,.throne .s-approved{border-color:var(--storm)}
+
+/* the five stages as a lightning path: nodes joined by a line; the word and icon carry the state */
+.throne .stages{display:flex;flex-wrap:wrap;gap:var(--s2)}
+.throne .stages li{display:flex;flex-wrap:wrap;align-items:center;gap:2px var(--s1);font-size:var(--fs-sec);color:var(--powder);padding:var(--s1) var(--s3);border:1px solid var(--line);border-radius:999px}
+.throne .stages li small{flex-basis:100%;font-size:var(--fs-meta);color:var(--powder);display:none}
+.throne .stages .st-done{color:var(--snow);border-color:var(--ok)}
+.throne .stages .st-now{color:var(--snow);border-color:var(--storm);box-shadow:0 0 0 2px rgba(224,179,65,.35)}
+.throne .stages .st-now small,.throne .stages .st-failed small{display:block}
+.throne .stages .st-failed{color:var(--snow);border-color:var(--bad)}
+.throne .tail{margin:0;max-height:16em;overflow:auto;background:#161a1f;border-radius:8px;padding:var(--s2) var(--s3);font-size:var(--fs-meta);color:var(--powder);white-space:pre-wrap;overflow-wrap:anywhere}
+
+.throne .filters{display:flex;flex-wrap:wrap;gap:var(--s2);margin-bottom:var(--s3)}
+.throne .filters [aria-pressed="true"]{border-color:var(--storm);color:var(--snow)}
+.throne .talert{display:flex;flex-wrap:wrap;gap:var(--s3);align-items:center;justify-content:space-between;border:1px solid var(--storm);border-radius:12px;padding:var(--s3) var(--s4);color:var(--snow);font-size:var(--fs-sec)}
+.throne .talert.bad{border-color:var(--bad)}
+@media (prefers-reduced-motion:reduce){.throne .stages .st-now{box-shadow:none}}

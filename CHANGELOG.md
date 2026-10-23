@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0 – 2026-10-23
+- **The Throne** (`plugin/`, Elaia server plugin `throne`, issue #11): the page where you decide what gets deployed and see what runs, laid out as a list first.
+  - **Waiting for your yes:** one card per request: repository, version, commit (linked), subject, changelog lines, checks, files changed, expiry, and the badge "Changes the realm's own rules" naming the files. **Deploy <repo> <version>** is a 3-second hold (pointer, Space or Enter; a screen reader's click arms it and a second click confirms); **Decline** asks for a reason word; **Check main again** asks Zeus to fetch `main`.
+  - **Deploying:** the five stages (fetch, checkout, build, install, health) from the live log, each with an icon and a word, the log tail, refreshed every 2 s. No Cancel.
+  - **Deployed now:** per repository, the version, when and by whom, and **Roll back to <previous>** (the same hold). **History:** every finished request with filters All · Waiting · Expired · Failed, its log, and Check main again on expired and superseded ones.
+  - Zeus's alert shows at the top with **Mark as read** (`zeus seen`). Home's "Needs you" says **Review argus-ui 4.9.0** while something waits.
+- Reads are file reads under `~/.local/share/zeus` and change nothing. Every button runs `zeus` with fixed arguments (no shell), passing who is asking from `tailscale serve`'s headers; Zeus and Janus decide, and the page shows what Zeus said.
+- `scripts/install.sh` installs the plugin into `~/.config/argus-ui/plugins/throne/` (an older copy is set aside) and restarts Elaia so it loads. Needs argus-ui 4.18 or later.
+- Tests: `tests/test_throne_plugin.py`; `tests/throne/throne.test.js` in a browser under Elaia against a fake zeus (`bash tests/throne/run.sh <argus-ui checkout>`, CI job `throne-page`)
+
 ## 0.3.3 – 2026-10-21
 - **Fix: Zeus now tells Janus how the approval came in.** The `verify-approval` request carries `"via": "ssh"` or `"via": "elaia"` (janus `docs/contract.md`), for `approve`/`deploy` and for `rollback`. Without it Janus took every request for the page's, so the first real `ssh {{SSH}} 'zeus deploy argus-ui'` was refused with "A request from the page must name the user it saw" (nothing was approved or deployed)
 - Tests: the fake Janus applies the real rule (no user and not ssh → refused), and the request Zeus sends is checked with its `via` on the page, ssh and rollback paths
