@@ -87,6 +87,12 @@ class RegistryTest(unittest.TestCase):
         self.assertIn("units/agents/zeus-queue.json", text)
         self.assertIn(".config/argus-ui/agents", text)
 
+    def test_install_always_builds(self):
+        # a dist/zeus left from an older checkout was installed as is: LeafyBard ran 0.3.3 with 0.4.2 pulled
+        lines = [l.strip() for l in (ROOT / "scripts" / "install.sh").read_text(encoding="utf-8").splitlines()]
+        self.assertTrue(any(l.startswith("bash scripts/build.sh") for l in lines))
+        self.assertFalse(any("[ -f dist/zeus ] ||" in l for l in lines))
+
 
 if __name__ == "__main__":
     unittest.main()

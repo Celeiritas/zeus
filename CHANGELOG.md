@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.3 – 2026-10-23
+- **Fix:** `scripts/install.sh` always builds before it installs. It used to build only when `dist/zeus` was missing, so after a `git pull` it installed the old build again (LeafyBard ran 0.3.3 with 0.4.2 pulled; no zeus code had changed since, so nothing behaved differently, but the next change would have been missed)
+- Tests: `test_install_always_builds`
+
 ## 0.4.2 – 2026-10-23
 - **The Throne's stages move** (argus-ui docs/ui-plan.md §15): when a deploy you are watching finishes a stage, that stage glints (Elaia 4.18, `api.fx.glint`) and Argus glances at the stage running now for a moment (Elaia 4.20, `api.argus.watch`). Opening the page in the middle of a deploy stays still; only changes you see happen move. On an older Elaia nothing changes
 - Tests: `tests/throne/throne.test.js` advances the fake deploy's log and checks the finished stage glints
