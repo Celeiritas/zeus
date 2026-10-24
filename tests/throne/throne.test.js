@@ -56,6 +56,13 @@ run(async b => {
   const stages = await p.locator('.run .stages li').allTextContents();
   check(stages.length === 5 && /fetch.*\(done\)/.test(stages[0]) && /build.*\(running\)/.test(stages[2]) && /install.*\(to come\)/.test(stages[3]), 'the five stages show from the live log, each with a word');
   check(/building the package/.test(await p.locator('.run .tail').textContent()) && await p.locator('.run button', {hasText: /cancel/i}).count() === 0, 'the log tail shows, and there is no Cancel');
+  // the deploy moves on (the log gains the install mark): the build stage glints, install is running now (Elaia 4.18+, api.fx)
+  const hasFx = await p.evaluate(() => typeof fx === 'object' && typeof fx.glint === 'function');
+  await p.evaluate(() => { window.glints = []; if (typeof fx === 'object') { const g = fx.glint; fx.glint = (el, o) => { glints.push(el.textContent.trim()); return g(el, o); }; } });
+  fs.appendFileSync(path.join(D, 'log', 'deploy-20261023-090000-argus-ui-aaaaaaa.log'), 'ZEUS_STAGE=install\ninstalling\n');
+  await p.locator('.run .stages li.st-now', {hasText: 'install'}).waitFor({timeout: 5000});
+  const glinted = await p.waitForFunction(() => window.glints.length > 0, null, {timeout: 3000}).then(() => true, () => false);
+  check(!hasFx || (glinted && await p.evaluate(() => glints.length === 1 && /build/.test(glints[0]))), hasFx ? 'the stage that just finished (build) glints, once' : 'glints: this Elaia is older than 4.18, skipped');
   check(await p.locator('.tablet').count() === 1, 'the approved request left the waiting list');
   await shot(p, 'throne');
 

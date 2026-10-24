@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.2 – 2026-10-23
+- **The Throne's stages move** (argus-ui docs/ui-plan.md §15): when a deploy you are watching finishes a stage, that stage glints (Elaia 4.18, `api.fx.glint`) and Argus glances at the stage running now for a moment (Elaia 4.20, `api.argus.watch`). Opening the page in the middle of a deploy stays still; only changes you see happen move. On an older Elaia nothing changes
+- Tests: `tests/throne/throne.test.js` advances the fake deploy's log and checks the finished stage glints
+
 ## 0.4.1 – 2026-10-23
 - **The Throne on wide screens** (1200 px and up): what needs you (Waiting for your yes, Deploying) on the left, what is (Deployed now, History) on the right, up to 1600 px. Phones keep one column
 - **Argus reacts** (Elaia 4.20 and later, `api.argus`): he nods when a Deploy or Roll back hold went through and winces when Zeus said no; when a deploy you were watching ends he nods if it is live and winces if it failed or was rolled back. On an older Elaia nothing changes

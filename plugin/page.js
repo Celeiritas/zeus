@@ -166,6 +166,7 @@ leafy.register('throne', (() => {
     const busy = $('.hold.holding, .hold.done, form.why:not([hidden])');
     const fresh = JSON.stringify(res.data), changed = !S || fresh !== JSON.stringify(S);
     const was = S ? S.deploying.map(r => r.id) : [];
+    const before = Object.fromEntries((S ? S.deploying : []).map(r => [r.id, (r.stages || []).map(s => s.state)]));   // each stage's state at the last look
     S = res.data;
     // a deploy you watched just ended: Argus nods if it is live, winces if it failed or was rolled back (Elaia 4.20, api.argus)
     for (const id of was.filter(id => !S.deploying.some(r => r.id === id))) {
@@ -173,6 +174,13 @@ leafy.register('throne', (() => {
       if (st && A.argus) A.argus.react(st === 'deployed' ? 'nod' : ['failed', 'rolled-back'].includes(st) ? 'wince' : 'rest');
     }
     if ((changed || stale) && !busy) { draw(); stale = false; } else if (changed) stale = true;   // never redraw under a hold or an open form
+    // a deploy you are watching moves on: the stage that just finished glints (Elaia 4.18, api.fx) and Argus glances at the one
+    // running now for a moment (Elaia 4.20, api.argus.watch). Only for stages seen before, so opening the page mid-deploy stays still
+    if (!busy) S.deploying.filter(r => r.id in before).forEach(r => (r.stages || []).forEach((s, k) => {
+      const li = $(`.run[data-id="${CSS.escape(r.id)}"] .stages li:nth-child(${k + 1})`); if (!li || before[r.id][k] === s.state) return;
+      if (s.state === 'done' && A.fx) A.fx.glint(li);
+      if (s.state === 'now' && A.argus) { A.argus.watch(li); setTimeout(() => A.argus.watch(null), 1500); }
+    }));
     const stage = S.deploying.map(r => `${name(r)} ${ver(r)}: ${((r.stages || []).find(s => s.state === 'now') || {}).name || 'starting'}`).join('; ');
     if (stage !== heard) { heard = stage; const live = $('#tstage'); if (live && stage) live.textContent = `Deploying ${stage}`; }   // stage changes only, not every line
     if (S.deploying.length) timer = setTimeout(load, 2000);
