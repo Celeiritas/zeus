@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.4 – 2026-10-24
+- **Fix: Approve on the Throne page could not find Janus.** Elaia's service runs with a short PATH (`/usr/bin:/bin`, no `~/.local/bin`), so `zeus approve` from the page held every request with "Janus could not be run: No such file or directory: 'janus'". Approving over ssh worked because a login shell has `~/.local/bin`. Zeus now looks for the programs it runs (janus, systemd-run, systemctl, the health checks) on PATH and then in `~/.local/bin`. A held request stays approvable, so the held one can be approved again after the install
+- Tests: `test_programs_are_found_in_local_bin_when_path_is_short`
+
 ## 0.4.3 – 2026-10-23
 - **Fix:** `scripts/install.sh` always builds before it installs. It used to build only when `dist/zeus` was missing, so after a `git pull` it installed the old build again (LeafyBard ran 0.3.3 with 0.4.2 pulled; no zeus code had changed since, so nothing behaved differently, but the next change would have been missed)
 - Tests: `test_install_always_builds`
