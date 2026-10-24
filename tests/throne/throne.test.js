@@ -37,6 +37,10 @@ run(async b => {
   check(/Changes the realm's own rules: janus\/routes\.json/.test(await realm.locator('.rules').textContent()) && /no checks/.test(await realm.textContent()), "a config change wears the rules badge, naming the files");
   check(/Zeus says: argus-ui 4\.8\.1 failed/.test(await p.locator('.talert').textContent()), "Zeus's alert shows at the top");
 
+  const col = s => p.locator(s).evaluate(e => e.closest('.tcol').getBoundingClientRect().x);
+  check(await col('#t-wait') < await col('#t-live') && Math.abs((await p.locator('#t-wait').boundingBox()).y - (await p.locator('#t-live').boundingBox()).y) < 2,
+    'wide screen: Waiting for your yes on the left, Deployed now beside it on the right');
+  await p.evaluate(() => { window.moved = []; const a = Element.prototype.animate; Element.prototype.animate = function (k, o) { if (this.id === 'argus') moved.push(o && o.duration); return a.call(this, k, o); }; });
   const go = t.locator('button.go'), [x, y] = await center(go);
   check(await go.locator('.hold-label').textContent() === 'Deploy argus-ui 4.9.0' && /hold 3 seconds/.test(await go.getAttribute('aria-label')), 'the button is verb-first, names what it deploys, and says it must be held');
   check((await go.boundingBox()).height >= 44, '44 px hit area');
@@ -46,6 +50,8 @@ run(async b => {
   await p.locator('.run', {hasText: 'Deploying argus-ui 4.9.0'}).waitFor({timeout: 5000});
   const ap = calls().find(c => c[0] === 'approve');
   check(JSON.stringify(ap) === JSON.stringify(['approve', '20261023-090000-argus-ui-aaaaaaa', '--sha', SHA, '--user', 'owner@example.com', '--ip', '203.0.113.7']), 'a 3 s hold approves that id and commit, passing who is asking to Zeus');
+  const reacts = await p.evaluate(() => !!document.getElementById('argus') && typeof look === 'object' && typeof look.react === 'function');
+  check(!reacts || await p.evaluate(() => moved.length > 0), reacts ? 'Argus nods when the approval went through (Elaia 4.20)' : 'Argus reactions: this Elaia is older than 4.20, skipped');
   check(/Approved\. Zeus is deploying argus-ui 4\.9\.0/.test(await p.locator('#tstatus').textContent()), 'the status line says what happened');
   const stages = await p.locator('.run .stages li').allTextContents();
   check(stages.length === 5 && /fetch.*\(done\)/.test(stages[0]) && /build.*\(running\)/.test(stages[2]) && /install.*\(to come\)/.test(stages[3]), 'the five stages show from the live log, each with a word');
@@ -94,6 +100,7 @@ run(async b => {
   // phone and reduced motion
   const ph = await page(b, 375, 760); await ph.emulateMedia({reducedMotion: 'reduce'}); await ph.goto(BASE + 'throne'); await ph.locator('.tablet').waitFor();
   check(await noOverflow(ph), '375 px: no sideways scrolling');
+  check(Math.abs(await ph.locator('#t-wait').evaluate(e => e.closest('.tcol').getBoundingClientRect().x) - await ph.locator('#t-live').evaluate(e => e.closest('.tcol').getBoundingClientRect().x)) < 2, '375 px: one column');
   await shot(ph, 'throne-phone');
   check(await ph.locator('.tablet button.go .hold-ring').evaluate(e => getComputedStyle(e).display) === 'none', 'reduced motion: no ring on the hold');
   check((await ph.locator('.tablet button.go').boundingBox()).height >= 44, 'phone: 44 px hit area');

@@ -95,15 +95,17 @@ leafy.register('throne', (() => {
       <p class="tline" id="tstatus" role="status">${e(said || S.line)}</p>
       <p class="sr" aria-live="polite" id="tstage"></p>
       ${S.alert ? `<div class="talert ${S.alert.level === 'alert' ? 'bad' : ''}"><p><span aria-hidden="true">⚠</span> <b>Zeus says:</b> ${e(S.alert.message)}</p><button type="button" class="seen">Mark as read</button></div>` : ''}
+      <div class="tcols"><div class="tcol">
       <section aria-labelledby="t-wait"><h3 id="t-wait">Waiting for your yes</h3>
         ${S.waiting.length ? `<ul class="tablets">${S.waiting.map(tablet).join('')}</ul>`
           : '<p class="empty">Nothing waits for your yes. A new commit on <code>main</code> shows up here within the hour, or press Check main again under Deployed now.</p>'}</section>
       ${S.deploying.length ? `<section aria-labelledby="t-run"><h3 id="t-run">Deploying</h3><ul class="runs">${S.deploying.map(running).join('')}</ul></section>` : ''}
+      </div><div class="tcol">
       <section aria-labelledby="t-live"><h3 id="t-live">Deployed now</h3>
         ${S.deployed.length ? `<ul class="lives">${S.deployed.map(liveRow).join('')}</ul>` : '<p class="empty">Zeus has no repositories yet (repos.json).</p>'}</section>
       <section aria-labelledby="t-hist"><h3 id="t-hist">History</h3>
         <div class="filters" role="group" aria-label="Show">${FILTERS.map(([v, l]) => `<button type="button" data-f="${v}" aria-pressed="${v === filter}">${l}</button>`).join('')}</div>
-        ${hist.length ? `<ul class="hist">${hist.map(row).join('')}</ul>` : '<p class="empty">Nothing here yet.</p>'}</section></div>`;
+        ${hist.length ? `<ul class="hist">${hist.map(row).join('')}</ul>` : '<p class="empty">Nothing here yet.</p>'}</section></div></div></div>`;
     wire();
     if (focus) { const el = find(focus); if (el) el.focus(); }
   }
@@ -123,6 +125,7 @@ leafy.register('throne', (() => {
     report(ok ? res : {ok: false, status: res.status, data: res.data}, done);
     if (ok && li && effect) await effect(li);
     setTimeout(load, 0);           // after the hold has let go of its button, so the redraw isn't held back
+    return ok;                     // a hold's onDone: false makes Argus wince instead of nod (Elaia 4.20)
   }
   function wire() {
     $$('.tablet').forEach(li => {
@@ -162,7 +165,13 @@ leafy.register('throne', (() => {
     if (!res.ok) { ROOT.innerHTML = `<div class="empty"><b>The Throne can't read Zeus right now.</b> Elaia's server didn't answer (${res.status || 'no answer'}). It tries again in 15 seconds.</div>`; return; }
     const busy = $('.hold.holding, .hold.done, form.why:not([hidden])');
     const fresh = JSON.stringify(res.data), changed = !S || fresh !== JSON.stringify(S);
+    const was = S ? S.deploying.map(r => r.id) : [];
     S = res.data;
+    // a deploy you watched just ended: Argus nods if it is live, winces if it failed or was rolled back (Elaia 4.20, api.argus)
+    for (const id of was.filter(id => !S.deploying.some(r => r.id === id))) {
+      const st = (S.history.find(r => r.id === id) || {}).state;
+      if (st && A.argus) A.argus.react(st === 'deployed' ? 'nod' : ['failed', 'rolled-back'].includes(st) ? 'wince' : 'rest');
+    }
     if ((changed || stale) && !busy) { draw(); stale = false; } else if (changed) stale = true;   // never redraw under a hold or an open form
     const stage = S.deploying.map(r => `${name(r)} ${ver(r)}: ${((r.stages || []).find(s => s.state === 'now') || {}).name || 'starting'}`).join('; ');
     if (stage !== heard) { heard = stage; const live = $('#tstage'); if (live && stage) live.textContent = `Deploying ${stage}`; }   // stage changes only, not every line
