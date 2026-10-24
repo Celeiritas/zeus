@@ -1,14 +1,14 @@
 #!/bin/bash
-# scripts/install.sh - put Zeus on this machine (the server): ~/.local/bin/zeus from dist/zeus (built first when
-# missing), the systemd user units from units/, and the Argus limits drop-in for zeus-queue.service.
-#   bash scripts/install.sh            build if needed, install, enable zeus-queue.path
+# scripts/install.sh - put Zeus on this machine (the server): ~/.local/bin/zeus from dist/zeus (built fresh every
+# time, so a pull is never installed as the old build), the systemd user units from units/, and the Argus limits drop-in for zeus-queue.service.
+#   bash scripts/install.sh            build, install, enable zeus-queue.path
 #   bash scripts/install.sh --no-units only the command (a PC, or a server without systemd)
 # It never touches ~/.config/zeus (repos.json, secret.env, keys) or ~/.local/share/zeus: run `zeus init` once for the
 # secret, and copy repos.json there yourself (or let the config repo's deploy do it).
 set -e
 R=$(cd "$(dirname "$0")/.." && pwd); cd "$R"
 UNITS=1; [ "$1" = "--no-units" ] && UNITS=0
-[ -f dist/zeus ] || bash scripts/build.sh
+bash scripts/build.sh                     # always: a dist/zeus left from an older checkout would install old code
 mkdir -p "$HOME/.local/bin"
 install -m 755 dist/zeus "$HOME/.local/bin/zeus"
 echo "installed ~/.local/bin/zeus ($("$HOME/.local/bin/zeus" --version))"
