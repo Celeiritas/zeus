@@ -1,2 +1,2 @@
-{ "id": "throne", "kind": "server", "name": "Throne", "subtitle": "Zeus · deploys", "version": "0.4.3",
+{ "id": "throne", "kind": "server", "name": "Throne", "subtitle": "Zeus · deploys", "version": "0.4.4",
   "server": "plugin.py", "page": "page.js", "style": "page.css", "order": 20 }

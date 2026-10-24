@@ -6,6 +6,7 @@ Nothing here is taken from the message or the page on trust: the sha is re-check
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -19,10 +20,12 @@ DEPLOY_LIMITS = ("-p", "CPUQuota=50%", "-p", "MemoryMax=1G", "-p", "IOWeight=50"
 
 def command(env_name, default):
     """A program named by the environment (tests point ZEUS_JANUS / ZEUS_SYSTEMD_RUN at fakes): a JSON list when the
-    value starts with [, else one word. Never from config, never from a message."""
+    value starts with [, else one word. Never from config, never from a message. Unset: the program on PATH, else
+    ~/.local/bin/<program>, because Elaia's unit (and systemd-run under it) has a PATH without ~/.local/bin."""
     val = os.environ.get(env_name, "").strip()
     if not val:
-        return [default]
+        local = os.path.join(os.path.expanduser("~"), ".local", "bin", default)
+        return [shutil.which(default) or (local if os.path.isfile(local) else default)]
     if val.startswith("["):
         try:
             cmd = json.loads(val)
