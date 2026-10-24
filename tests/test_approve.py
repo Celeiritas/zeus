@@ -239,6 +239,19 @@ class ApproveTest(ApproveBase):
         self.assertEqual(self.store.read(rec["id"])["state"], "held")
         self.assertIn("Janus could not be run", self.store.read(rec["id"])["reason"])
 
+    def test_programs_are_found_in_local_bin_when_path_is_short(self):
+        """Elaia's unit has PATH=/usr/bin:/bin; Janus lives in ~/.local/bin (the 0.4.3 Throne Approve was held with
+        "No such file or directory: 'janus'")."""
+        local = self.home / ".local" / "bin"
+        local.mkdir(parents=True, exist_ok=True)
+        (local / "janus").write_text("#!/bin/sh" + chr(10))
+        empty = self.home / "empty-path"
+        empty.mkdir()
+        with mock.patch.dict(os.environ, {"PATH": str(empty)}):
+            os.environ.pop("ZEUS_JANUS", None)
+            self.assertEqual(approve.command("ZEUS_JANUS", "janus"), [str(local / "janus")])
+            self.assertEqual(approve.command("ZEUS_NOPE", "no-such-program"), ["no-such-program"], "missing stays bare, so the error names it")
+
     # the start
     def test_systemd_run_failure_keeps_the_approval_and_alerts(self):
         sha, rec = self.pending()
