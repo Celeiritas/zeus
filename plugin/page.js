@@ -1,18 +1,21 @@
-// Zeus · Throne (docs/design.md §9): what waits for your yes, what is deploying, what runs now, and what happened.
+// Zeus · Throne (docs/design.md §9, §14): the questions sessions asked you, what waits for your yes, what is deploying, what runs now, and what happened.
 // A list first: every card and button is in the tab order, and each state is an icon plus a word. Pictures only confirm
 // what the words already say (the bolt on an approval, the tablet crumbling on a decline; both skipped with reduced motion).
 // Deploy and Roll back are 3-second holds (api.holdConfirm); Decline asks for a reason word. Nothing here decides:
 // each button runs zeus through the plugin, and Zeus, with Janus behind him, says yes or no.
+// Needs your answer (the decision inbox, tier 3): a session's question with its options as buttons. A choice is a tap,
+// not a hold, because an answer runs nothing; it is recorded once and can't be changed afterwards.
 leafy.register('throne', (() => {
   const STATE = {pending: ['⏳', 'waiting'], held: ['⏸', 'held'], approved: ['✓', 'approved'], deploying: ['⚡', 'deploying'],
     deployed: ['✓', 'deployed'], 'rolled-back': ['↩', 'rolled back'], failed: ['✕', 'failed'], expired: ['⌛', 'expired'],
-    superseded: ['↑', 'superseded'], declined: ['⊘', 'declined'], refused: ['⊘', 'refused'], released: ['⇥', 'released']};
+    superseded: ['↑', 'superseded'], declined: ['⊘', 'declined'], refused: ['⊘', 'refused'], released: ['⇥', 'released'],
+    open: ['?', 'needs your answer'], answered: ['✓', 'answered']};
   const CHECKS = {success: ['✓', 'checks passed'], failure: ['✕', 'checks failed'], pending: ['⋯', 'checks running'], none: ['–', 'no checks']};
   const STAGE = {done: ['✓', 'done'], now: ['⚡', 'running'], todo: ['○', 'to come'], failed: ['✕', 'failed here']};
   const REASONS = [['not-now', 'Not now'], ['not-ready', 'Not ready'], ['wrong-commit', 'Wrong commit'], ['testing', 'Still testing']];
   const FILTERS = [['all', 'All'], ['waiting', 'Waiting'], ['expired', 'Expired'], ['failed', 'Failed']];
   const FAILED = ['failed', 'rolled-back', 'refused'];
-  let A = null, ROOT = null, S = null, filter = 'all', timer = 0, said = '', heard = '', stale = false;
+  let A = null, ROOT = null, S = null, filter = 'all', timer = 0, said = '', heard = '', stale = false, askedOpen = false;
   const openLogs = new Set();
   const $ = (s, el = ROOT) => el.querySelector(s), $$ = (s, el = ROOT) => [...el.querySelectorAll(s)];
   const e = s => A.esc(String(s ?? ''));
@@ -33,6 +36,27 @@ leafy.register('throne', (() => {
   }
   const by = a => a && a.user ? ` by ${e(a.user)}${a.node ? ` · ${e(a.node)}` : ''}${a.via ? ` (${e(a.via)})` : ''}` : '';
   const when = r => (r.deploy && (r.deploy.finished || r.deploy.at)) || (r.approval && r.approval.at) || r.seen || '';
+
+  const still = () => !!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+  /* ---------- needs your answer: the decision inbox ---------- */
+  function askCard(r) {
+    return `<li class="ask" data-id="${e(r.id)}">
+      <div class="thead"><h4>${e(r.title)}</h4>${chip('open', STATE)}</div>
+      <p class="meta facts"><span>Asked by <b>${e(r.project)}</b></span><span>${e(ago(r.asked))}</span><span>${e(until(r.expires))}</span></p>
+      ${r.context ? `<p class="ctx">${e(r.context)}</p>` : ''}
+      <div class="acts opts" role="group" aria-label="Answer: ${e(r.title)}">${(r.options || []).map((o, i) =>
+        `<button type="button" class="opt${i + 1} opt" data-i="${i + 1}">${e(o)}</button>`).join('')}</div>
+      <p class="meta">One tap answers. Nothing runs because of it, and the answer can't be changed afterwards.</p>
+    </li>`;
+  }
+  function askedRow(r) {
+    const a = r.answer, who = a && a.by && a.by.user ? ` by ${e(a.by.user)}${a.by.via ? ` (${e(a.by.via)})` : ''}` : '';
+    return `<li class="hrow asked-row" data-id="${e(r.id)}">
+      <div class="thead"><span>${chip(r.state, STATE)} <b>${e(r.title)}</b></span><span class="meta">${e(ago((a && a.at) || r.expires))}</span></div>
+      <p class="meta">${a ? `Answer: <b>${e(a.option)}</b>${who}` : 'Nobody answered before it expired.'} · asked by ${e(r.project)}</p>
+    </li>`;
+  }
 
   /* ---------- the four sections ---------- */
   function tablet(r) {
@@ -96,6 +120,9 @@ leafy.register('throne', (() => {
       <p class="sr" aria-live="polite" id="tstage"></p>
       ${S.alert ? `<div class="talert ${S.alert.level === 'alert' ? 'bad' : ''}"><p><span aria-hidden="true">⚠</span> <b>Zeus says:</b> ${e(S.alert.message)}</p><button type="button" class="seen">Mark as read</button></div>` : ''}
       <div class="tcols"><div class="tcol">
+      <section aria-labelledby="t-ask"><h3 id="t-ask">Needs your answer</h3>
+        ${(S.asks || []).length ? `<ul class="asks">${S.asks.map(askCard).join('')}</ul>` : '<p class="empty">Nothing is waiting for you.</p>'}
+        ${(S.asked || []).length ? `<details class="asked"${askedOpen ? ' open' : ''}><summary>Answered and expired (${S.asked.length})</summary><ul class="hist">${S.asked.map(askedRow).join('')}</ul></details>` : ''}</section>
       <section aria-labelledby="t-wait"><h3 id="t-wait">Waiting for your yes</h3>
         ${S.waiting.length ? `<ul class="tablets">${S.waiting.map(tablet).join('')}</ul>`
           : '<p class="empty">Nothing waits for your yes. A new commit on <code>main</code> shows up here within the hour, or press Check main again under Deployed now.</p>'}</section>
@@ -128,6 +155,17 @@ leafy.register('throne', (() => {
     return ok;                     // a hold's onDone: false makes Argus wince instead of nod (Elaia 4.20)
   }
   function wire() {
+    $$('.ask').forEach(li => {
+      const r = (S.asks || []).find(x => x.id === li.dataset.id); if (!r) return;
+      $$('button.opt', li).forEach(b => b.onclick = () => {
+        const i = Number(b.dataset.i), opt = r.options[i - 1];
+        $$('button.opt', li).forEach(x => { x.disabled = true; });
+        b.setAttribute('aria-pressed', 'true');
+        ask('answer', {id: r.id, index: i}, `Answered "${r.title}": ${opt}.`, li, x => { if (!still() && A.fx && A.fx.glint) A.fx.glint(x); })
+          .then(ok => { if (!ok) $$('button.opt', li).forEach(x => { x.disabled = false; x.removeAttribute('aria-pressed'); }); });
+      });
+    });
+    const det = $('details.asked'); if (det) det.ontoggle = () => { askedOpen = det.open; };
     $$('.tablet').forEach(li => {
       const r = S.waiting.find(x => x.id === li.dataset.id); if (!r) return;
       A.holdConfirm($('.go', li), () => ask('approve', {id: r.id, sha: r.sha}, `Approved. Zeus is deploying ${name(r)} ${ver(r)}.`, li, x => A.fx.bolt(x)));

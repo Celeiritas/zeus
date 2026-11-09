@@ -193,6 +193,74 @@ class ThronePluginTest(unittest.TestCase):
                 doc = self.p.post("seen", {}, Ctx())[1]
             self.assertEqual((doc["ok"], doc["code"]), (False, code))
 
+    # ---- the decision inbox (0.5.0, docs/design.md §14) ----
+    def ask(self, aid, state="open", **kw):
+        r = {"id": aid, "kind": "decision", "tier": 3, "state": state, "project": aid.split("-", 3)[3],
+             "title": "Tiers as proposed?", "options": ["Yes", "No"], "context": "", "asked": stamp(self.now - timedelta(hours=1)),
+             "expires": stamp(self.now + timedelta(days=2)), "by": {"user": "owner", "via": "ssh"}, "answer": None, "sig": "0" * 64}
+        r.update(kw)
+        path = self.data / "queue" / (aid + ".json")
+        path.write_text(json.dumps(r), encoding="utf-8")
+        return path
+
+    def test_asks_open_oldest_first_and_finished_apart(self):
+        self.ask("ask-20261109-080000-zeus")
+        self.ask("ask-20261109-070000-hub")
+        old = self.ask("ask-20261101-070000-spartamelee", expires=stamp(self.now - timedelta(hours=1)))
+        self.ask("ask-20261108-070000-mnemosyne", state="answered",
+                 answer={"option": "No", "index": 2, "at": stamp(self.now), "by": {"user": "owner@example.com", "via": "elaia"}})
+        (self.data / "queue" / "ask-20261109-090000-broken.json").write_text("{nope", encoding="utf-8")
+        self.ask("ask-20261109-100000-liar", id="ask-20261109-100000-other")      # a record must carry its own file's id
+        self.rec("20261021-090000-argus-ui-aaaaaaa")
+        before = old.read_bytes()
+        s = self.p.snapshot(self.now)
+        self.assertEqual([a["id"] for a in s["asks"]], ["ask-20261109-070000-hub", "ask-20261109-080000-zeus"],
+                         "open asks, the one waiting longest on top")
+        self.assertEqual([(a["id"], a["state"]) for a in s["asked"]],
+                         [("ask-20261108-070000-mnemosyne", "answered"), ("ask-20261101-070000-spartamelee", "expired")])
+        self.assertEqual(s["asked"][0]["answer"]["option"], "No")
+        self.assertEqual(old.read_bytes(), before, "a GET never changes an ask: Zeus records the expiry himself")
+        self.assertEqual([r["id"] for r in s["waiting"]], ["20261021-090000-argus-ui-aaaaaaa"], "asks are never deploy cards")
+        self.assertEqual([r["id"] for r in s["history"]], [])
+        self.assertEqual(s["line"], "2 questions for you · 1 deploy waiting")
+
+    def test_an_ask_reaches_the_page_as_data_only(self):
+        hostile = '<img src=x onerror="alert(1)">"</script>'
+        self.ask("ask-20261109-080000-zeus", title=hostile, options=["<b>yes</b>", 'no & "later"'], context="a\n<script>",
+                 command="rm -rf ~", repo="you/argus-ui", sha=SHA)
+        a = self.p.snapshot(self.now)["asks"][0]
+        self.assertEqual(sorted(a), ["answer", "asked", "context", "expires", "id", "options", "project", "state", "title"],
+                         "only the fields the page shows; nothing an ask carries can look like a deploy")
+        self.assertEqual((a["title"], a["options"], a["context"]), (hostile, ["<b>yes</b>", 'no & "later"'], "a\n<script>"))
+        code, doc = self.p.get("", {}, Ctx())
+        self.assertEqual(json.loads(json.dumps(doc))["asks"][0]["title"], hostile, "the page gets the text as it was asked")
+
+    def test_home_status_and_summary_count_asks(self):
+        self.assertEqual(self.p.get("summary", {}, Ctx()), (200, {"asks": 0, "deploys": 0, "needs_you": 0, "line": "Nothing waiting"}))
+        self.ask("ask-20261109-080000-zeus")
+        self.assertEqual(self.p.get("status", {}, Ctx())[1], {"line": "1 question for you · no deploys waiting", "needs": True,
+                                                              "action": "Answer 1 question", "count": 1})
+        self.ask("ask-20261109-070000-hub")
+        self.rec("20261021-090000-argus-ui-aaaaaaa")
+        st = self.p.get("status", {}, Ctx())[1]
+        self.assertEqual((st["needs"], st["action"], st["count"]), (True, "Answer 2, review 1", 3))
+        self.assertEqual(self.p.get("summary", {}, Ctx())[1], {"asks": 2, "deploys": 1, "needs_you": 3,
+                                                               "line": "2 questions for you · 1 deploy waiting"})
+
+    def test_answer_runs_zeus_with_the_option_number_and_who(self):
+        aid = "ask-20261109-080000-zeus"
+        code, doc, seen = self.call("answer", {"id": aid, "index": 2},
+                                    {"Tailscale-User-Login": "owner@example.com", "X-Forwarded-For": "203.0.113.7"})
+        self.assertEqual(seen["argv"], ["zeus-test", "answer", aid, "--index", "2", "--user", "owner@example.com", "--ip", "203.0.113.7"])
+        self.assertEqual((code, doc["ok"]), (200, True))
+        code, doc, seen = self.call("answer", {"id": aid, "index": 1}, rc=1, err="zeus answer: %s was already answered" % aid)
+        self.assertEqual((doc["ok"], doc["code"]), (False, 1), "Zeus refuses a second answer; the plugin shows it")
+        for body in ({"id": aid, "index": 0}, {"id": aid, "index": 9}, {"id": aid, "index": "1"}, {"id": aid, "index": True},
+                     {"id": aid}, {"id": "20261021-090000-argus-ui-aaaaaaa", "index": 1}, {"id": "ask-../../x", "index": 1},
+                     {"id": aid + " --index 1", "index": 1}):
+            code, doc, seen = self.call("answer", body)
+            self.assertEqual((code, seen), (400, {}), body)
+
     def test_manifest(self):
         m = json.loads((R / "plugin" / "plugin.json").read_text(encoding="utf-8"))
         self.assertEqual((m["id"], m["kind"]), ("throne", "server"))

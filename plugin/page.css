@@ -16,6 +16,17 @@
 .throne a{color:var(--snow)}
 .throne code{font-size:var(--fs-meta);overflow-wrap:anywhere}
 
+/* needs your answer: a session's question; its options are plain buttons (a tap, no hold: an answer runs nothing) */
+.throne .ask{background:var(--card);border:1px solid var(--line);border-top:3px solid var(--powder);border-radius:12px;padding:var(--s4);display:grid;gap:var(--s2);min-width:0}
+.throne .asks{display:grid;gap:var(--s3)}
+.throne .ctx{font-size:var(--fs-sec);color:var(--snow);white-space:pre-wrap;overflow-wrap:anywhere}
+.throne .opts button{max-width:100%;white-space:normal;overflow-wrap:anywhere;text-align:left}
+.throne .opts [aria-pressed="true"]{border-color:var(--ok)}
+.throne .asked{margin-top:var(--s3)}
+.throne .asked summary{min-height:var(--hit);display:flex;align-items:center;cursor:pointer;color:var(--powder);font-size:var(--fs-sec)}
+.throne .asked .hist{margin-top:var(--s2)}
+.throne .s-open{border-color:var(--powder)}.throne .s-answered{border-color:var(--ok)}
+
 /* a card: waiting tablets, deploys, live rows and history rows share it */
 .throne .tablet,.throne .run,.throne .live,.throne .hrow{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:var(--s4);display:grid;gap:var(--s2);min-width:0}
 .throne .tablets,.throne .runs,.throne .lives,.throne .hist{display:grid;gap:var(--s3)}

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.0 – 2026-11-09
+- **The decision inbox** (`docs/design.md` §14, tier 3): sessions ask the owner, the owner answers on the Throne.
+  - `zeus ask --project <id> --title "…" --option a --option b [--context "…"] [--expires 3d] [--json]` writes `queue/ask-<time>-<project>.json` (kind `decision`, tier 3, state `open`), signed like a log line, plus a signed `ask` line in the approvals log.
+  - `zeus answer <id> <option>` or `--index <n>` records the answer once: a signed `answer` line, the record re-signed as `answered`. A second answer is refused and names the first; an expired ask, or a record changed outside Zeus, is refused too. Two answers at the same moment can't both win (an `O_EXCL` marker in `queue/.answers/`).
+  - `zeus asks [<id>] [--open|--all] [--project <id>] [--json]` lists them, applying expiry (`ask-expired` line). An answer is data, never a command.
+  - `zeus verify-log` also checks the ask records (in `queue/` by default, or a record or folder given as the path).
+- **Throne: Needs your answer**, above Waiting for your yes: one card per open ask (the question, who asked, when, the expiry, the context as text) with its options as buttons. A choice is a tap (pointer, Enter or Space), not a hold, because it runs nothing. Empty state "Nothing is waiting for you."; answered and expired asks below in a closed list with the answer and who gave it. With reduced motion nothing moves.
+- **`GET api/throne/summary`**: `{asks, deploys, needs_you, line}` for Elaia's Home or any page that only needs counts. Home's own "Needs you" counts asks too ("Answer 1 question", "Answer 2, review 1").
+- **Design:** `docs/design.md` §14 "Tiers" (proposed; Dax to confirm the second tap for tier 1): review, rules, power and decisions, how a tier is chosen (by Zeus, never from a message), expiry and Janus per tier, and what a hostile message can do. §13 now says what is built.
+- **Tests:** `tests/test_asks.py` (open, answered, expired, second answer refused, simultaneous answers, a changed record refused and named by `verify-log`, bad fields, the command line); `tests/test_throne_plugin.py` (asks on the page as data only, Home and summary counts, the `answer` arguments and refusals); `tests/throne/throne.test.js` (the column above Waiting, escaping, keyboard path with Enter and Space, a second answer refused, 375 px, reduced motion).
+- **Fix (tests):** five decline and approve tests made their request at the fixed test time and decided at the real time, so they failed once 72 hours had passed (main's CI was red since 2026-10-24). They now use the test clock.
+
 ## 0.4.4 – 2026-10-24
 - **Fix: Approve on the Throne page could not find Janus.** Elaia's service runs with a short PATH (`/usr/bin:/bin`, no `~/.local/bin`), so `zeus approve` from the page held every request with "Janus could not be run: No such file or directory: 'janus'". Approving over ssh worked because a login shell has `~/.local/bin`. Zeus now looks for the programs it runs (janus, systemd-run, systemctl, the health checks) on PATH and then in `~/.local/bin`. A held request stays approvable, so the held one can be approved again after the install
 - Tests: `test_programs_are_found_in_local_bin_when_path_is_short`

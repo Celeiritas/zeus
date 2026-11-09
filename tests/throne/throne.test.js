@@ -3,6 +3,9 @@
 // zeus#11 "done means": every field on a request card; a 1 s press sends nothing; a 3 s press approves {id, sha} with who
 // is asking; the keyboard hold works; 375 px without sideways scroll; reduced motion draws no ring; every state is an
 // icon and a word; an expired row has Check main again. Plus: decline with a reason word, Home's "Needs you", the alert.
+// 0.5.0, the decision inbox (docs/design.md §14): Needs your answer above Waiting for your yes, its empty state, an
+// option is a tap (pointer, Enter or Space) that sends {id, index}, what a session wrote stays text, Home counts asks,
+// api/throne/summary, 375 px and reduced motion.
 const {BASE, check, page, center, noOverflow, shot, run} = require('./lib');
 const fs = require('fs'), path = require('path');
 const D = process.env.ZEUS_DATA, SHA = 'a'.repeat(40), PREV = 'b'.repeat(40);
@@ -12,6 +15,11 @@ function rec(id, extra = {}, folder = 'queue') {
   const r = {id, action: 'deploy', state: 'pending', repo: 'you/argus-ui', sha: SHA, previous: PREV, subject: 'Mentor: Learn phase', version: '4.9.0',
     checks: 'success', changelog: ['- Learn cards before practice', '- A hint ladder'], files: 12, rules_changed: [], seen: iso(-1), expires: iso(48), approval: null, deploy: null, ...extra};
   fs.writeFileSync(path.join(D, folder, id + '.json'), JSON.stringify(r));
+}
+function askRec(id, extra = {}) {
+  const r = {id, kind: 'decision', tier: 3, state: 'open', project: 'zeus', title: 'Tiers as proposed?', options: ['Yes, as proposed', 'Tier 1 without the second tap'],
+    context: 'Tier 1 is a deploy that changes the realm\'s own rules.', asked: iso(-2), expires: iso(70), by: {user: 'owner', via: 'ssh'}, answer: null, zeus: '0.5.0', sig: '0'.repeat(64), ...extra};
+  fs.writeFileSync(path.join(D, 'queue', id + '.json'), JSON.stringify(r));
 }
 const calls = () => { try { return fs.readFileSync(path.join(D, 'calls.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)); } catch (e) { return []; } };
 run(async b => {
@@ -33,13 +41,15 @@ run(async b => {
   for (const [what, re] of [['repository and version', /argus-ui\s*4\.9\.0/], ['subject', /Mentor: Learn phase/], ['commit', /aaaaaaa/], ['changelog', /A hint ladder/],
     ['checks', /checks passed/], ['files', /12 files changed/], ['expiry', /expires in (47 h|2 d)/]]) check(re.test(txt), `a request card shows the ${what}`);
   check(await t.locator(`a[href="https://github.com/you/argus-ui/commit/${SHA}"]`).count() === 1, 'the commit links to GitHub');
+  check(/Nothing is waiting for you\./.test(await p.locator('section[aria-labelledby="t-ask"]').textContent()), 'Needs your answer: the empty state says nothing is waiting for you');
+  check(await p.locator('#t-ask').evaluate(h => !!(h.compareDocumentPosition(document.getElementById('t-wait')) & Node.DOCUMENT_POSITION_FOLLOWING)), 'Needs your answer comes above Waiting for your yes');
   const realm = p.locator('.tablet[data-id="20261023-080000-realm-ccccccc"]');
   check(/Changes the realm's own rules: janus\/routes\.json/.test(await realm.locator('.rules').textContent()) && /no checks/.test(await realm.textContent()), "a config change wears the rules badge, naming the files");
   check(/Zeus says: argus-ui 4\.8\.1 failed/.test(await p.locator('.talert').textContent()), "Zeus's alert shows at the top");
 
   const col = s => p.locator(s).evaluate(e => e.closest('.tcol').getBoundingClientRect().x);
-  check(await col('#t-wait') < await col('#t-live') && Math.abs((await p.locator('#t-wait').boundingBox()).y - (await p.locator('#t-live').boundingBox()).y) < 2,
-    'wide screen: Waiting for your yes on the left, Deployed now beside it on the right');
+  check(await col('#t-wait') < await col('#t-live') && await col('#t-ask') === await col('#t-wait') && Math.abs((await p.locator('#t-ask').boundingBox()).y - (await p.locator('#t-live').boundingBox()).y) < 2,
+    'wide screen: Needs your answer, then Waiting for your yes, on the left; Deployed now beside them on the right');
   await p.evaluate(() => { window.moved = []; const a = Element.prototype.animate; Element.prototype.animate = function (k, o) { if (this.id === 'argus') moved.push(o && o.duration); return a.call(this, k, o); }; });
   const go = t.locator('button.go'), [x, y] = await center(go);
   check(await go.locator('.hold-label').textContent() === 'Deploy argus-ui 4.9.0' && /hold 3 seconds/.test(await go.getAttribute('aria-label')), 'the button is verb-first, names what it deploys, and says it must be held');
@@ -111,4 +121,70 @@ run(async b => {
   await shot(ph, 'throne-phone');
   check(await ph.locator('.tablet button.go .hold-ring').evaluate(e => getComputedStyle(e).display) === 'none', 'reduced motion: no ring on the hold');
   check((await ph.locator('.tablet button.go').boundingBox()).height >= 44, 'phone: 44 px hit area');
+
+  // ---- the decision inbox (0.5.0) ----
+  const HOSTILE = '<img src=x onerror="window.pwned=1">"</script><b>Ship it?</b>';
+  askRec('ask-20261109-080000-zeus');
+  askRec('ask-20261109-070000-spartamelee', {project: 'spartamelee', title: HOSTILE, options: ['<b>yes</b>', 'no & "later"', 'x'.repeat(80)],
+    context: 'line one\n<script>window.pwned=2</script> & more', asked: iso(-5)});
+  askRec('ask-20261101-070000-hub', {project: 'hub', title: 'Old question', asked: iso(-200), expires: iso(-100)});
+  askRec('ask-20261108-070000-mnemosyne', {project: 'mnemosyne', title: 'Back up the drives nightly?', state: 'answered', options: ['Nightly', 'Weekly'],
+    answer: {option: 'Weekly', index: 2, at: iso(-3), by: {user: 'owner@example.com', via: 'elaia'}}});
+  const k = await page(b); await k.setExtraHTTPHeaders(WHO);
+  await k.goto(BASE + 'home'); await k.waitForTimeout(800);
+  check(/Answer 2, review 1/.test(await k.locator('.home').textContent()), "Home's Needs you counts open asks next to deploys");
+  const sum = await k.evaluate(async u => (await fetch(u)).json(), BASE + 'api/throne/summary');
+  check(sum.asks === 2 && sum.deploys === 1 && sum.needs_you === 3 && /2 questions for you/.test(sum.line), 'api/throne/summary counts asks and deploys ' + JSON.stringify(sum));
+  await k.goto(BASE + 'throne'); await k.locator('.ask').first().waitFor();
+  check(await k.locator('.ask').count() === 2, 'Needs your answer lists the open asks; the expired and answered ones are not buttons');
+  check(await k.locator('.ask').first().getAttribute('data-id') === 'ask-20261109-070000-spartamelee', 'the ask waiting longest is on top');
+  const ev = k.locator('.ask[data-id="ask-20261109-070000-spartamelee"]');
+  check(await k.evaluate(() => window.pwned === undefined) && await ev.locator('img, script, h4 b').count() === 0, "what a session wrote stays text: no element is made from it");
+  check(await ev.locator('h4').textContent() === HOSTILE && await ev.locator('button.opt1').textContent() === '<b>yes</b>' && await ev.locator('button.opt2').textContent() === 'no & "later"',
+    'the title and options read exactly as asked');
+  check(/line one\n<script>/.test(await ev.locator('.ctx').textContent()), 'the context keeps its line breaks, as text');
+  const askTxt = await k.locator('.ask[data-id="ask-20261109-080000-zeus"]').textContent();
+  check(/Asked by zeus/.test(askTxt) && /expires in (69|70) h|expires in 3 d/.test(askTxt) && /needs your answer/.test(askTxt), 'a card says who asked, when it expires, and its state in words');
+  check(await k.locator('.ask button.go, .ask .hold').count() === 0, 'an answer is a tap: no hold button on an ask');
+  await k.locator('details.asked summary').click();
+  check(/Answer: Weekly by owner@example\.com \(elaia\)/.test(await k.locator('details.asked').textContent()) && /Nobody answered before it expired/.test(await k.locator('details.asked').textContent()),
+    'Answered and expired: the answer, who gave it, and the one nobody answered');
+  await shot(k, 'throne-asks');
+  // keyboard: Tab reaches the first option, Enter answers it
+  await k.evaluate(() => { window.glints = []; if (typeof fx === 'object') { const g = fx.glint; fx.glint = (el, o) => { glints.push(el.className); return g(el, o); }; } });
+  await k.locator('#tstatus').evaluate(el => { el.tabIndex = -1; el.focus(); });
+  let reached = false;
+  for (let i = 0; i < 40 && !reached; i++) { await k.keyboard.press('Tab'); reached = await k.evaluate(() => document.activeElement.matches('.ask[data-id="ask-20261109-070000-spartamelee"] button.opt1')); }
+  check(reached, 'keyboard: Tab reaches the first option of the first ask');
+  const visible = await k.evaluate(() => getComputedStyle(document.activeElement).outlineStyle !== 'none' || getComputedStyle(document.activeElement).boxShadow !== 'none');
+  check(visible, 'keyboard: the focused option shows its focus');
+  await k.keyboard.press('Enter');
+  await k.locator('.ask[data-id="ask-20261109-070000-spartamelee"]').waitFor({state: 'detached', timeout: 5000});
+  check(JSON.stringify(calls().find(c => c[0] === 'answer')) === JSON.stringify(['answer', 'ask-20261109-070000-spartamelee', '--index', '1', '--user', 'owner@example.com', '--ip', '203.0.113.7']),
+    'Enter on an option answers that ask with its number, passing who is answering');
+  check(/Answered/.test(await k.locator('#tstatus').textContent()), 'the status line says it was answered');
+  // Space on an option of the other ask
+  await k.locator('.ask[data-id="ask-20261109-080000-zeus"] button.opt2').focus(); await k.keyboard.press(' ');
+  await k.locator('.ask').first().waitFor({state: 'detached', timeout: 5000});
+  check(calls().filter(c => c[0] === 'answer').length === 2 && /Nothing is waiting for you/.test(await k.locator('section[aria-labelledby="t-ask"]').textContent()), 'Space answers too; then the empty state returns');
+  const hasGlint = await k.evaluate(() => typeof fx === 'object' && typeof fx.glint === 'function');
+  check(!hasGlint || await k.evaluate(() => glints.length >= 1), hasGlint ? 'an answer glints the card (motion allowed)' : 'glint: this Elaia is older than 4.18, skipped');
+  check(k.errors.length === 0, 'no page errors (asks) ' + k.errors.join(' | '));
+
+  // a second answer to an answered ask is refused by Zeus and the page says so
+  const r2 = await k.evaluate(async u => { const r = await fetch(u, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id: 'ask-20261109-080000-zeus', index: 1})}); return r.json(); },
+    BASE + 'api/throne/answer');
+  check(r2.ok === false && /already answered/.test(r2.msg), 'a second answer is refused');
+
+  // phone, reduced motion: one column, no sideways scroll with an 80-character option, no glint
+  askRec('ask-20261109-090000-zeus', {title: 'A long one ' + 'w'.repeat(120), options: ['y'.repeat(80), 'no']});
+  const pr = await page(b, 375, 760); await pr.setExtraHTTPHeaders(WHO); await pr.emulateMedia({reducedMotion: 'reduce'});
+  await pr.goto(BASE + 'throne'); await pr.locator('.ask').waitFor();
+  check(await noOverflow(pr), '375 px: an ask with long words does not scroll sideways');
+  check((await pr.locator('.ask button.opt2').boundingBox()).height >= 44, '375 px: options have a 44 px hit area');
+  await shot(pr, 'throne-asks-phone');
+  await pr.evaluate(() => { window.glints = []; if (typeof fx === 'object') { const g = fx.glint; fx.glint = (el, o) => { glints.push(el.className); return g(el, o); }; } });
+  await pr.locator('.ask button.opt2').click();
+  await pr.locator('.ask').waitFor({state: 'detached', timeout: 5000});
+  check(await pr.evaluate(() => glints.length === 0), 'reduced motion: answering moves nothing');
 });
