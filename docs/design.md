@@ -20,13 +20,14 @@ Placeholders follow argus-ui's rule: `{{SERVER}}` (the always-on box that runs E
 | Expiry | A request **expires 72 h** after `seen` and is **superseded** the moment a newer commit on `main` of the same repo arrives. Only the newest commit per repo is approvable; older ones only through Roll back. Expired and superseded requests stay listed in History with a Re-check button | Deploying an older commit of `main` is a downgrade; "fresh" means fresh. Nothing disappears, it just isn't approvable |
 | Config deploys | The private config repo is deployed by Zeus like any repo; its `scripts/deploy.sh` validates (`hermes/janus/zeus check-config`) from the checkout **before** copying anything. A request whose diff touches `zeus/repos.json` or `janus/routes.json` carries a **"changes the realm's own rules"** badge | One mechanism, one log. Rules that widen Zeus or Janus deserve a visible flag |
 | `hermes release` | **Through Zeus** as action `release`: the Release button on the Delivery page creates and approves a Zeus request with the same 3-second hold (Janus verifies identity, Zeus logs, Hermes releases). Executables stay refused in code even when released | Hermes held the button back until an approval mechanism existed; this is it |
+| Repositories built elsewhere | **Staged packs** (§15, 0.6.0): a session builds on `{{PC}}` and stages an immutable pack on the server; Zeus checks the pack and the commit himself and runs one fixed install script on his own copy after the owner's hold | Some builds need files only `{{PC}}` has; the yes, the on-`main` check and the signed log stay the same |
 | Idle cost | Zero: `zeus-queue.path` (watches `requests/`) and one-shots started by the page or ssh. Zeus has no timer at all | Resource rule |
 
 ## 1. What Zeus is, and isn't
 - **One job: run what the owner approved.** Zeus turns an approved request into a checkout of exactly that commit and a run of that repo's `scripts/deploy.sh`, records the result, and can put the previous approved commit back.
 - **He never fetches from anywhere but the allowlisted repos**, never runs a command from a message, a page or a config, never deploys a branch, never touches a file Hermes carried, never pushes anywhere. The only code Zeus runs that he didn't ship with is `scripts/deploy.sh` of a commit the owner merged and then approved.
 - **Nothing of Zeus runs while idle.**
-- **Python 3 standard library only**, one zipapp at `~/.local/bin/zeus` (like Hermes and Janus). Calls `git`, `janus`, `hermes`, `systemd-run`, `systemctl --user`, `tailscale`. Subcommands: `queue` (process `requests/`), `request`, `approve`, `approve-release`, `decline`, `deploy-run` (internal, under `systemd-run`), `rollback`, `status`, `check-config`, `init`, `verify-log`, `seen`, and since 0.5.0 the decision inbox: `ask`, `answer`, `asks` (§14).
+- **Python 3 standard library only**, one zipapp at `~/.local/bin/zeus` (like Hermes and Janus). Calls `git`, `janus`, `hermes`, `systemd-run`, `systemctl --user`, `tailscale`. Subcommands: `queue` (process `requests/`), `request`, `approve`, `approve-release`, `decline`, `deploy-run` (internal, under `systemd-run`), `rollback`, `status`, `check-config`, `init`, `verify-log`, `seen`, since 0.5.0 the decision inbox: `ask`, `answer`, `asks` (§14), and since 0.6.0 `stage-request` (§15).
 
 ## 2. `~/.config/zeus/repos.json` – the allowlist
 The owner's copy lives in the private config repo (`zeus/repos.json`), copied (not symlinked) into `~/.config/zeus/` by that repo's deploy. This repo ships `examples/repos.example.json` with placeholders; the loader expands `~` and `{{PLACEHOLDERS}}` from `~/.config/leafy/realm.json`.
@@ -62,6 +63,7 @@ The owner's copy lives in the private config repo (`zeus/repos.json`), copied (n
 | `health` | One of: `{ "http": "http://127.0.0.1:<port>/..." }` (localhost only, expects 200 and, when the body has a `version`, that it equals the commit's `VERSION`), `{ "service": "<unit>" }` (`systemctl --user is-active`), `{ "exec": "<agent> check-config" }` (**from a fixed list in code**: `hermes check-config`, `janus check-config`, `zeus check-config`). Never a free command |
 | `services` | Units Argus should watch after this deploy; shown on the card |
 | `rules` | Paths whose change flags the request "changes the realm's own rules" |
+| `kind`, `staging`, `install` | Since 0.6.0: `kind` `staged-pack` for a repository whose pack is built elsewhere, with its fixed staging folder and fixed install script (§15). Absent = `git`, everything in this section |
 
 Not in config, on purpose: branch (always `main`), deploy script (always `scripts/deploy.sh` of the checked-out commit), who may approve (Janus's `approvers.zeus`).
 
@@ -201,7 +203,7 @@ CLAUDE.md, README.md, VERSION, CHANGELOG.md, LICENSE
 | private config repo | `zeus/repos.json`, `scripts/deploy.sh`, `mnemosyne-journal` job + write key, branch protection if the plan allows | the owner |
 
 ## 13. Build order
-Where it stands (2026-11-09): 0.1 to 0.4 are built (0.4.4 is the last release; Zeus runs on `{{SERVER}}`); 0.5.0 (the decision inbox) is built in this branch. Only `approve-release` (#12) is still a stub that says so.
+Where it stands (2026-11-09): 0.1 to 0.5 are built (0.4.4 is the last release on `{{SERVER}}`; 0.5.0, the decision inbox, is merged); 0.6.0 (staged packs, §15) is built in this branch. Only `approve-release` (#12) is still a stub that says so.
 
 | Version | Issues (one branch, one PR each) | Needs | Status |
 |---|---|---|---|
@@ -210,7 +212,7 @@ Where it stands (2026-11-09): 0.1 to 0.4 are built (0.4.4 is the last release; Z
 | 0.3 "the deploy" | #8 `deploy-run` under `systemd-run`: fetch, checkout, `--no-pull`, health · #9 hold vs auto-rollback, `rollback`, `state/` · #10 alert file | argus-ui 4.9.1 | built |
 | 0.4 "the throne" | #11 Throne plugin page (list, hold-to-confirm, live log, History with filters, a11y tests) · #12 `approve-release` + Delivery page button | argus-ui `server` plugin kind; hermes `release --approval` | #11 built (0.4.0 to 0.4.4); #12 not built |
 | 0.5 "the inbox" | §14 tiers (proposed) · the decision inbox: `ask` / `answer` / `asks`, Needs your answer on the Throne, `api/throne/summary` | nothing new | built (0.5.0) |
-| 0.6 | staged-pack deploys for a repository whose build needs files only `{{PC}}` has (design first, as §15) | §14 | planned |
+| 0.6 "the staged pack" | staged-pack deploys for a repository whose build needs files only `{{PC}}` has: §15, `zeus stage-request`, kind `staged-pack`, the fixed install script, the Throne's pack card | §14 | built (0.6.0) |
 | 0.7 | power actions as tier 2 (`zeus power gamemode\|desktop\|reboot`) | §14 tier 2 confirmed | planned |
 | 1.0 | #13 bootstrap on the server, config-repo `deploy.sh`, first approved deploy of argus-ui, retire the manual line | all above; the journal job | partly: Zeus is installed on the server (0.4.x); the journal job is Mnemosyne's |
 
@@ -267,6 +269,105 @@ Exit codes: 0 done · 1 refused (unknown, not open, already answered, expired, c
 { "asks": 2, "deploys": 1, "needs_you": 3, "line": "2 questions for you · 1 deploy waiting" }
 ```
 `asks` = open asks, `deploys` = requests waiting for a yes (`pending`), `needs_you` = both. Home's own `api/throne/status` counts asks too: "Answer 1 question", "Answer 2, review 1", or the deploy wording as before.
+
+## 15. Staged packs
+**Status: built in 0.6.0** (designed 2026-11-09 from the game session's request of 2026-11-04; the owner reads the pull request before it merges). It changes nothing for the repositories of §2: they keep `kind` `git` (the default) and everything above.
+
+**Why.** Some repositories cannot be built on `{{SERVER}}` from git. A game's build needs models, sounds and art that live only on `{{PC}}` (outside git, by the owner's rule), and its repository is private with no build tools on the server. Until now its deploy was a line the owner ran on `{{PC}}`. The owner wants to approve it on the Throne instead, from `{{PHONE}}`, while still never letting Zeus run a command from a message. So the session on `{{PC}}` builds and **stages an immutable pack** on the server, then asks; Zeus checks the pack and the commit **himself**, at the request, at the hold and again before the install; the owner's 3-second hold is the yes; Zeus runs **one fixed install script** on **his own copy** of the pack; a rollback puts back the **previous set-aside copy**. Zeus builds nothing and never deploys a pack that is not from a request.
+
+### 15.1 `repos.json`: kind `staged-pack`
+```json
+"you/game": { "kind": "staged-pack",
+              "url": "git@github-game-zeus:you/game.git", "private": true, "key": "~/.config/zeus/keys/game",
+              "staging": "~/.config/argus-ui/.staged-game",
+              "install": "~/.config/zeus/install/game.sh",
+              "health": { "http": "http://127.0.0.1:8095/api/health" }, "services": ["argus-ui"] }
+```
+| Field | Meaning |
+|---|---|
+| `kind` | `git` (default: §2, a clone and the commit's `scripts/deploy.sh`) or `staged-pack`. Anything else fails `check-config` |
+| `url`, `private`, `key` | As §2. Zeus still fetches `main` himself, into his bare mirror under `mirrors/` (there is no clone, so `path` fails `check-config` for this kind) |
+| `staging` | **The fixed staging folder**, absolute or `~/…`. `check-config`: a folder, not a symbolic link, owned by Zeus's user, not writable by group or others. Missing is a warning (make it before the first request) |
+| `install` | **The fixed install script**, absolute or `~/…`. `check-config`: a regular file, not a symbolic link, owned by Zeus's user, and neither it nor its folder writable by group or others; it may not sit inside `staging` (whoever stages must not be able to change what installs). Missing is a warning; Zeus refuses to deploy until it is there. Checked again at every run |
+| `health`, `services` | As §2: the same fixed list (`http` on 127.0.0.1, `service`, `exec` from the three agents) |
+| `rules` | As §2; the diff comes from the mirror |
+`staging` and `install` are refused on a `git` repository. **Not in config, on purpose:** the pack's file name (Zeus builds it from the version and the commit, §15.3), the arguments the script gets and the order of the checks (fixed in code).
+
+**Why a config may name a script here, when §0 says it never does.** For a `git` repository the script comes from the approved commit, so naming another one in config would let a file widen Zeus. For a staged pack nothing inside the pack runs: the one script is a file the owner installs on the server once, `check-config` makes sure only Zeus's own user can change it (the same user who could edit `repos.json`), and it is never inside the folder sessions write to. The repository's `CLAUDE.md` rule "no config field names a script" needs a one-line exception for this kind; that is the owner's edit.
+
+### 15.2 Staging (the session's part)
+1. **Build** on `{{PC}}` from `main` at the commit (`git switch main && git pull --ff-only`, build). The pack is the built folder as a gzip tar with `VERSION` at its top, e.g. `tar -czf <version>-<sha>.tgz -C dist .` (the game's `dist/` has `VERSION` and `assets.json`).
+2. **Upload under a temporary name, then rename** in the staging folder: `scp` to `<staging>/.incoming-<version>-<sha>.tgz`, then `mv` it to `<staging>/<version>-<sha>.tgz` and `chmod a-w` it. A half-copied pack never carries its final name.
+3. **Write the checksum** `<staging>/<version>-<sha>.tgz.sha256`: the output of `sha256sum <version>-<sha>.tgz`, or the 64 hex characters alone.
+4. **Ask:** `ssh {{SSH}} 'zeus stage-request you/game --version <version> --sha <40 hex> --tests "<one line>"'`.
+
+| File in `<staging>/` | What |
+|---|---|
+| `<version>-<sha>.tgz` | the pack; `sha` is the full 40-hex commit on `main` it was built from |
+| `<version>-<sha>.tgz.sha256` | its sha256 (`<hex>` or `<hex>  <version>-<sha>.tgz`) |
+A staged pack is **immutable**: never overwritten. To stage the same commit again, set the old pack aside first (a `.set-aside-<date-time>-` name) and ask again; a request whose pack changed is refused at the hold.
+
+### 15.3 The request: `zeus stage-request`
+```
+zeus stage-request <repo> --version <version> --sha <40 hex> [--tests "<one line>"]
+```
+**The request carries `{repo, version, sha}` and nothing else Zeus acts on.** `tests` is a note for the card ("412 passed"), shown as text, up to 200 characters on one line; Zeus acts on nothing in it. There is no path, file name or command in a request: Zeus checks `version` against `^[0-9]{1,4}.[0-9]{1,4}.[0-9]{1,4}(-[0-9a-z]{1,16})?$` (dots literal) and `sha` against 40 lowercase hex **before anything is read** (exit 2 otherwise), then builds the name himself: `<staging from repos.json>/<version>-<sha>.tgz`. A version cannot hold `/`, `..` or anything else that would leave the folder.
+
+Then, in order (every refusal is a `refused` record with the reason, as §3; exit 1):
+1. the repository is in `repos.json` with kind `staged-pack`. A Hermes deploy-request message, `zeus request` (the Throne's Re-check) and `zeus deploy` are refused for such a repository: its requests come from a staged pack only. A request for the same repository, commit and version already waiting is refused as a duplicate;
+2. the pack and its `.sha256` are regular files directly in the staging folder (not links), owned by Zeus's user and not writable by group or others; the pack is at most 2 GB and its modification time is not later than now;
+3. the sha256 of the pack equals the `.sha256` file;
+4. the pack is a gzip tar of plain files and folders only (no absolute names, no `..`, no links, devices or pipes; at most 100 000 entries and 8 GB unpacked) with a `VERSION` file at its top equal to `version`;
+5. the pack's size and modification time did not change while Zeus read it;
+6. Zeus's own fetch of `main`: the commit is on `origin/main`, and its `VERSION` file equals `version`;
+7. subject, changelog (the first section of the commit's `CHANGELOG.md`) and the files changed since what is deployed, from the mirror.
+
+The record is §3's with `"kind": "staged-pack"`, `"tests"` and
+```json
+"pack": { "name": "0.46.0-<sha>.tgz", "size": 44145823, "mtime_ns": 1762700000123456789, "sha256": "<64 hex>",
+          "files": 712, "unpacked": 101234567, "checked_ns": 1762700040000000000 }
+```
+`size` and `mtime_ns` are the pack as Zeus read it; `checked_ns` is the clock when he did. Superseding (a newer request for the repository), expiry, Decline and History are as §3. Exit codes: 0 pending · 1 refused · 2 bad input (nothing read).
+
+### 15.4 The hold, and the run
+**The card** (Waiting for your yes): the version, the commit (link), its subject and changelog, "Tests: 412 passed" as the session reported it (or "no tests reported"), "Pack 42.1 MB · 712 files", the files changed and the expiry. Buttons: **Deploy** (hold) and **Decline**. There is no "Check main again" for this kind: Zeus can't make a pack; the session stages a new one.
+
+**The hold** (`zeus approve`, §4) checks, before Janus is asked:
+1. the record is `pending`, fresh, and the commit is the one the page showed (§4);
+2. a fresh fetch: the commit is still an ancestor of `origin/main`;
+3. the pack: still a plain file under the same name, the **same size and modification time** as recorded (else "replaced or changed after the request"), not **newer than the request** (`mtime_ns` ≤ `checked_ns`), the `.sha256` still says the recorded hash, and the **sha256 recomputed now** equals both.
+Any failure ends the record `refused` with the reason on the card; nothing ran, nothing is retried, and a new `zeus stage-request` is needed. Janus is asked as §4 (`action: deploy`); the signed line gains `"kind": "staged-pack"` and `"pack": { "sha256", "size" }`.
+
+**`zeus deploy-run`** (detached, one at a time, §5):
+1. the record's approval is a signed line in the log, with the same pack sha256;
+2. the install script passes the `check-config` rules again;
+3. fetch `main` again; the commit is still on it;
+4. **Zeus copies the pack into his own folder**, `~/.local/share/zeus/packs/<id>.tgz` (mode 600), hashing as he copies, checks that hash against the record, and checks the tar rules and `VERSION` **on his copy**. From here on nothing reads the staging folder: a pack swapped after this point cannot reach the install;
+5. `bash <install> install <copy> <version> <sha>`, in the packs folder, with `ZEUS_ID`, `ZEUS_SHA`, `ZEUS_VERSION`, `ZEUS_PREVIOUS` and `ZEUS_PREVIOUS_VERSION` (what runs now, or empty), `ZEUS_PACK_FILES` (the files Zeus counted in the pack) and `ZEUS_PACK_SHA256`; output into the run log; `deploy_timeout_s`. The script prints `ZEUS_STAGE=install` before its first change;
+6. the health check from the fixed list; an `http` answer with a `version` must equal the pack's;
+7. `state/<repo>.json` as §5; the entry carries the pack's sha256. Zeus's copy stays in `packs/` (never deleted; a cleaning job may trim old ones after a preview, like `.done/`).
+
+**When it fails** (§6, unchanged): before `ZEUS_STAGE=install` nothing changed and Zeus holds; after it, a timeout or a failed health check makes Zeus run `bash <install> rollback <live version> <live sha>` **once**, then the health check. Zeus never retries on his own.
+
+### 15.5 The install script
+[`examples/install-pack.sh.example`](../examples/install-pack.sh.example), the install half of the game's old deploy line from `{{PC}}`. Copy it to the `install` path, set `NAME` (and `CHECK_FILE`) at its top, `chmod 755`. It never deletes anything.
+- **`install <pack> <version> <sha>`:** unpack into a new `.incoming-<date-time>-<name>` folder beside the live one; check `VERSION` = version, the number of files = `ZEUS_PACK_FILES`, and one named file's bytes (looked up in `assets.json` when its name is content-hashed) = its size in the pack; print `ZEUS_STAGE=install`; move the live copy into `.set-aside-<date-time>-<name>/<name>` with a `zeus-sha` file beside it naming the commit it was; move the checked copy in; check `VERSION` again.
+- **`rollback <version> <sha>`:** find the newest `.set-aside-*-<name>` whose copy's `VERSION` is version (and whose `zeus-sha`, when there is one, is sha). None: say so and exit 1 **before** the stage line, so Zeus holds. Else print the stage line, set the live copy aside the same way, move that copy in, check `VERSION`.
+
+### 15.6 Rollback
+By hand, as §6: the Throne's **Roll back → 0.45.0** hold or `ssh {{SSH}} 'zeus rollback you/game'`. The target is `state.previous`; Janus verifies who; Zeus writes the signed line; `deploy-run` runs `bash <install> rollback <version> <sha>` and the health check. It needs no pack. Rolling back twice goes one step further back, as long as the set-aside copies are there (they are never deleted). Never retried on its own.
+
+### 15.7 What can a hostile or confused session do?
+- **Path traversal in the version string** (`1.0.0/../../x`): refused as bad input before any file is read; the name is built by Zeus from checked parts, and the file must sit directly in the staging folder, not be a link.
+- **Swap the pack after the request:** the hold compares size, modification time and a fresh sha256 with what was recorded, and refuses. Between the hold and the run: `deploy-run` hashes its own copy and fails before the install (nothing changed, held). After the copy: the install reads only Zeus's copy.
+- **Swap the pack and its `.sha256` together:** the recorded hash no longer matches; refused.
+- **A pack for a commit not on `main`, or a `VERSION` that differs** (request, commit, pack): refused.
+- **A pack with a link, an absolute name or `..` inside:** refused at the request, and again on Zeus's copy before the install.
+- **Make Zeus run something from the request:** no field of a request is a path, a file name or a command, and `tests` is shown as text.
+- **Change the install script:** only as Zeus's own user. That account can already edit `repos.json` or run anything, so these checks protect against mistakes, other accounts and a session that writes only where it stages; not against the owner's own account (the same limit as §14).
+- **Flood requests:** each is a record; a newer one supersedes the older; nothing runs without the owner's hold.
+
+**Once, by the owner:** a read-only deploy key for the game's repository (Zeus's own, like §2's private repos) and its ssh alias; the staging folder (`mkdir -p` it, `chmod 700`); the install script copied from the example; the `repos.json` entry through the private config repo; `zeus check-config`.
 
 ## References
 - Akhawe, D., & Felt, A. P. (2013). Alice in Warningland: A large-scale field study of browser security warning effectiveness. *USENIX Security '13*.
