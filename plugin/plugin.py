@@ -294,7 +294,10 @@ def post(path, body, ctx):
         aid, index = str(body.get("id", "")), body.get("index")
         if not (ASK_ID.match(aid) and type(index) is int and 1 <= index <= 8):
             return 400, {"ok": False, "msg": "bad ask id or option"}
-        args = ["answer", aid, "--index", str(index)] + _who(ctx)
+        who = _who(ctx)
+        if "--user" not in who:     # the recorded login is the only record of who decided: no Janus is behind an answer
+            return 403, {"ok": False, "msg": "no tailnet login on this request; open the Throne through tailscale serve"}
+        args = ["answer", aid, "--index", str(index)] + who
     else:
         return 404, {"ok": False, "msg": "not found"}
     code, said = run(args)

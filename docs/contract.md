@@ -57,10 +57,10 @@ Any file that is not valid JSON, not an object, or larger than 64 KB is refused 
 
 ## 3a. The decision inbox (0.5.0): `queue/ask-<time>-<project>.json`, `zeus asks --json`, `api/throne/summary`
 The record, its states (`open` → `answered` | `expired`), its signature and its log lines are in `docs/design.md` §14. What a session relies on:
-- `zeus asks --json` (open asks) and `zeus asks --all --json` / `zeus asks <id> --json` print a JSON list of records, newest first, expiry applied. An answered record has `"state": "answered"` and `"answer": { "option", "index", "by": { "user", "via" }, "at" }`. `via` is `elaia` for a tap on the Throne, `ssh` or `local` for a shell.
+- `zeus asks --json` (open asks) and `zeus asks --all --json` / `zeus asks <id> --json` print a JSON list of records, newest first, expiry applied. Only records whose signature matches are listed: one changed outside Zeus is left out and named on stderr (run `zeus verify-log`); stdout stays a JSON list. An answered record has `"state": "answered"` and `"answer": { "option", "index", "by": { "user", "via", "ip"? }, "at" }`. `via` is `elaia` for a tap on the Throne (a tailnet login and address), `ssh` or `local` for a shell; `--user`/`--ip` are refused over ssh.
 - The answer is data. Zeus runs nothing because of it, and neither may the session: it reads the option text as the owner's choice and acts within its own rules.
 - `GET <base>/api/throne/summary` → `{ "asks": <open asks>, "deploys": <requests waiting for a yes>, "needs_you": <both>, "line": "<the status line>" }`. Only counts and the line; the shape only grows.
-- `POST <base>/api/throne/answer { "id": "ask-…", "index": 1..8 }` → the plugin runs `zeus answer <id> --index <n>` with who is asking from `tailscale serve`'s headers, and returns `{ ok, code, msg }` with what Zeus said.
+- `POST <base>/api/throne/answer { "id": "ask-…", "index": 1..8 }` → the plugin runs `zeus answer <id> --index <n>` with who is asking from `tailscale serve`'s headers, and returns `{ ok, code, msg }` with what Zeus said. A request without a `Tailscale-User-Login` header is refused with 403 `{ ok: false, msg }` and Zeus is not run.
 
 ## 4a. What is live: `state/<owner>--<name>.json`
 Written by `zeus deploy-run` after a deploy passes its health check:
@@ -136,5 +136,5 @@ It makes a request for the current `main` (or takes the one already waiting for 
 | `zeus deploy-run <id>` (internal) | deployed | not approved or not signed, refused before running, failed or rolled back (reason on the record) | usage |
 | `zeus verify-log [path] [--key-file F]` | every line (and, by default, every ask record in `queue/`) ok | key or path missing | usage (10: a bad line or record) |
 | `zeus ask --project P --title T --option A --option B [--context C] [--expires 3d] [--json]` | asked: the id (or the signed record) printed | no key | bad fields (all of them named) |
-| `zeus answer <id> <option>` / `zeus answer <id> --index N [--user L --ip A]` | answered, once | no such ask, not open (answered, expired), changed outside Zeus, no key | bad id, option or index |
-| `zeus asks [<id>] [--open\|--all] [--project P] [--json]` | listed | — | usage |
+| `zeus answer <id> <option>` / `zeus answer <id> --index N [--user L --ip A]` | answered, once | no such ask, not open (answered, expired), changed outside Zeus, no key | bad id, option or index; `--user`/`--ip` over ssh, or one without the other |
+| `zeus asks [<id>] [--open\|--all] [--project P] [--json]` | listed (a record changed outside Zeus is left out and named on stderr) | no key | usage |

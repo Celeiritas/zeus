@@ -7,7 +7,8 @@ Each ask is one record, queue/ask-<time>-<project>.json, signed like a log line 
 ZEUS_LOG_KEY) and re-signed by Zeus at each change of state: open -> answered | expired. Every change also appends a
 signed line to the approvals log (action ask, answer, ask-expired; tier 3), so `zeus verify-log` covers both. A record
 is answered once: the first answer wins (an O_EXCL marker in queue/.answers/), a second one is refused, and a record
-changed outside Zeus (its sig no longer matches) is refused rather than answered."""
+changed outside Zeus (its sig no longer matches) is refused rather than answered and left out of `zeus asks`. `via:
+elaia` (a tap on the Throne) needs --user and --ip, which are refused in an ssh session, as `zeus approve` refuses them."""
 import getpass
 import json
 import os
@@ -91,12 +92,30 @@ def check_fields(project, title, options, context):
     return project, title, options, context
 
 
-def who(user=None, ip=None):
-    """Who is asking or answering: the tailnet login the Throne passes, else the shell's user (over ssh or local)."""
-    by = {"user": user or getpass.getuser(), "via": "elaia" if user else ("ssh" if os.environ.get("SSH_CONNECTION") else "local")}
-    if ip:
-        by["ip"] = ip
-    return by
+def who(user=None, ip=None, cmd="zeus answer"):
+    """Who is asking or answering. `via: elaia` is the Throne's path: the plugin passes the tailnet login and the
+    address, --user and --ip, both. In an ssh session the flags are refused, as `zeus approve` refuses them
+    (approve.caller): a shell over ssh is recorded as `ssh` with its own user and address, never as a tap. A shell on
+    the server itself without the flags is `local`. AskError (exit 2) when the flags can't be taken."""
+    ssh = (os.environ.get("SSH_CONNECTION") or "").split()
+    if ssh and (user or ip):
+        raise AskError("%s: --user and --ip are refused in an ssh session: an answer over ssh is recorded as the "
+                       "shell's user (via ssh), never as a tap on the Throne. Nothing was recorded." % cmd, 2)
+    if user or ip:
+        if not (user and ip):
+            raise AskError("%s: --user and --ip go together (the Throne passes both). Nothing was recorded." % cmd, 2)
+        return {"user": user, "via": "elaia", "ip": ip}
+    if ssh:
+        return {"user": getpass.getuser(), "via": "ssh", "ip": ssh[0]}
+    return {"user": getpass.getuser(), "via": "local"}
+
+
+def _key(cmd):
+    """The log key, or AskError in plain words (no traceback) when secret.env is missing or loose."""
+    try:
+        return log.key()
+    except log.LogError as e:
+        raise AskError("%s: %s" % (cmd, e))
 
 
 def new_id(store, project, t):
@@ -160,6 +179,7 @@ def ask(store, project, title, options, context="", expires=DEFAULT_EXPIRES, now
     now = now or queue.now_local()
     project, title, options, context = check_fields(project, title, options, context)
     until = now + duration(expires)
+    by = who(user, ip, "zeus ask")
     try:
         log.key()
     except log.LogError as e:
@@ -167,18 +187,24 @@ def ask(store, project, title, options, context="", expires=DEFAULT_EXPIRES, now
     aid = new_id(store, project, now)
     rec = {"id": aid, "kind": KIND, "tier": TIER, "state": OPEN, "project": project, "title": title,
            "options": options, "context": context, "asked": queue.stamp(now), "expires": queue.stamp(until),
-           "by": who(user, ip), "answer": None, "zeus": version()}
+           "by": by, "answer": None, "zeus": version()}
     log.append(store, _line(rec, "ask", now, options=options, expires=rec["expires"], by=rec["by"]), when=now)
     return write(store, rec)
 
 
-def expire(store, now=None):
-    """Open asks past their expiry become expired (here and when answering; no timer). Returns those records."""
+def expire(store, now=None, k=None):
+    """Open asks past their expiry become expired (here and when answering; no timer). Returns those records. Only a
+    record whose signature matches is touched: one changed outside Zeus stays as it is for `zeus verify-log`. AskError
+    when the key is missing (never a traceback)."""
     now = now or queue.now_local()
     gone = []
-    for rec in all_(store):
+    recs = all_(store)
+    if not recs:
+        return gone
+    k = k or _key("zeus asks")
+    for rec in recs:
         t = queue.parse_time(rec.get("expires"))
-        if rec.get("state") == OPEN and t is not None and now >= t and log.check(rec):
+        if rec.get("state") == OPEN and t is not None and now >= t and log.check(rec, k):
             rec["state"] = EXPIRED
             log.append(store, _line(rec, "ask-expired", now, expires=rec["expires"]), when=now)
             gone.append(write(store, rec))
@@ -190,6 +216,7 @@ def answer(store, aid, option=None, index=None, now=None, user=None, ip=None):
     now = now or queue.now_local()
     if not ID.match(aid or ""):
         raise AskError("zeus answer: %r is not an ask id (ask-YYYYMMDD-HHMMSS-<project>)." % aid, 2)
+    by = who(user, ip)
     rec = read(store, aid)
     if rec is None:
         raise AskError("zeus answer: no ask %s." % aid)
@@ -218,7 +245,6 @@ def answer(store, aid, option=None, index=None, now=None, user=None, ip=None):
         i = options.index(option)
     else:
         raise AskError("zeus answer: %r is not one of the options: %s." % (option, " | ".join(options)), 2)
-    by = who(user, ip)
     answers(store).mkdir(parents=True, exist_ok=True)
     try:
         fd = os.open(answers(store) / (aid + ".json"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -232,10 +258,20 @@ def answer(store, aid, option=None, index=None, now=None, user=None, ip=None):
     return write(store, rec)
 
 
-def listing(store, which="open", now=None, project=None, aid=None):
-    """The asks for `zeus asks`: expiry applied first, then open ones (or all), newest first."""
-    expire(store, now)
-    recs = all_(store)
+def listing(store, which="open", now=None, project=None, aid=None, bad=None):
+    """The asks for `zeus asks`: expiry applied first, then open ones (or all), newest first. A record whose signature
+    does not match (changed outside Zeus) is left out, so a session never reads a forged answer; its id goes into
+    `bad` when a list is given. AskError when the key is missing."""
+    if not all_(store):
+        return []
+    k = _key("zeus asks")
+    expire(store, now, k)
+    recs = []
+    for r in all_(store):
+        if log.check(r, k):
+            recs.append(r)
+        elif bad is not None:
+            bad.append(r["id"])
     if aid:
         recs = [r for r in recs if r["id"] == aid]
     if project:
@@ -287,7 +323,15 @@ def main_answer(args):
 
 
 def main_asks(args):
-    recs = listing(queue.Store(), "all" if args.all else "open", project=args.project, aid=args.id)
+    bad = []
+    try:
+        recs = listing(queue.Store(), "all" if args.all else "open", project=args.project, aid=args.id, bad=bad)
+    except AskError as e:
+        return _fail(e)
+    if bad:
+        print("zeus asks: left out %d record%s changed outside Zeus (the signature does not match): %s. Run `zeus "
+              "verify-log`; nothing in them is an answer." % (len(bad), "" if len(bad) == 1 else "s", ", ".join(bad)),
+              file=sys.stderr)
     if args.json:
         print(json.dumps(recs, ensure_ascii=False, indent=1))
         return 0

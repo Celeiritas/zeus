@@ -70,6 +70,29 @@ class AsksTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"SSH_CONNECTION": "192.0.2.4 5 6 7"}):
             self.assertEqual(self.ask()["by"]["via"], "ssh")
 
+    def test_user_flag_over_ssh_is_refused(self):
+        rec = self.ask()
+        with mock.patch.dict(os.environ, {"SSH_CONNECTION": "192.0.2.4 5 6 7"}):
+            for kw in (dict(user="owner@example.com", ip="203.0.113.7"), dict(user="owner@example.com"),
+                       dict(ip="203.0.113.7")):
+                self.refused(2, "--user and --ip are refused in an ssh session", asks.answer, self.store, rec["id"],
+                             index=1, now=NOW, **kw)
+            self.assertEqual(asks.read(self.store, rec["id"])["state"], "open", "nothing was recorded")
+            self.assertEqual([l["action"] for l in self.lines()], ["ask"])
+            r = self.cli_env({"SSH_CONNECTION": "192.0.2.4 5 6 7"}, "answer", rec["id"], "--index", "1",
+                             "--user", "owner@example.com", "--ip", "203.0.113.7")
+            self.assertEqual(r.returncode, 2, r.stderr)
+            self.assertIn("refused in an ssh session", r.stderr)
+            got = asks.answer(self.store, rec["id"], index=1, now=NOW)
+        self.assertEqual((got["answer"]["by"]["via"], got["answer"]["by"]["ip"]), ("ssh", "192.0.2.4"),
+                         "over ssh an answer is the shell's, never a tap")
+
+    def test_user_and_ip_go_together(self):
+        rec = self.ask()
+        for kw in (dict(user="owner@example.com"), dict(ip="203.0.113.7")):
+            self.refused(2, "--user and --ip go together", asks.answer, self.store, rec["id"], index=1, now=NOW, **kw)
+        self.assertEqual(asks.read(self.store, rec["id"])["state"], "open")
+
     def test_bad_fields_ask_nothing(self):
         for kw, text in ((dict(project="Zeus!"), "--project"), (dict(title=""), "--title"),
                          (dict(title="two\nlines"), "--title"), (dict(title="x" * 201), "--title"),
@@ -169,6 +192,44 @@ class AsksTest(unittest.TestCase):
         self.assertIn("%s.json:1: bad (sig does not match: the record was changed outside Zeus" % rec["id"], r.stdout)
         self.assertIn("approvals-2026-11.jsonl:1: ok (ask %s" % rec["id"], r.stdout)
 
+    def test_a_changed_record_is_left_out_of_asks(self):
+        a = self.ask()
+        b = self.ask(project="hub", now=NOW + timedelta(seconds=1))
+        asks.answer(self.store, b["id"], index=1, now=NOW)
+        path = self.data / "queue" / (b["id"] + ".json")
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc["answer"]["option"] = "FORGED"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        bad = []
+        self.assertEqual([r["id"] for r in asks.listing(self.store, "all", now=NOW, bad=bad)], [a["id"]])
+        self.assertEqual(bad, [b["id"]])
+        self.assertEqual(asks.listing(self.store, now=NOW, aid=b["id"]), [], "not even when asked for by its id")
+        r = self.cli("asks", "--all", "--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual([x["id"] for x in json.loads(r.stdout)], [a["id"]])
+        self.assertNotIn("FORGED", r.stdout)
+        self.assertIn("left out 1 record changed outside Zeus", r.stderr)
+        self.assertIn(b["id"], r.stderr)
+        self.assertIn("zeus verify-log", r.stderr)
+        r = self.cli("asks", "--all")
+        self.assertNotIn("FORGED", r.stdout)
+        self.assertIn("left out 1 record changed outside Zeus", r.stderr)
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["answer"]["option"], "FORGED",
+                         "the changed record stays as it is, for verify-log")
+
+    def test_no_key_lists_without_a_traceback(self):
+        rec = self.ask(expires="10m")
+        self.secret.unlink()
+        self.refused(1, "run `zeus init`", asks.listing, self.store, "all", now=NOW + timedelta(hours=1))
+        for args in (("asks",), ("asks", "--all", "--json")):
+            r = self.cli(*args)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertNotIn("Traceback", r.stderr)
+            self.assertIn("zeus asks:", r.stderr)
+            self.assertIn("run `zeus init`", r.stderr)
+            self.assertEqual(r.stdout, "")
+        self.assertEqual(asks.read(self.store, rec["id"])["state"], "open", "nothing changed without the key")
+
     def test_verify_log_checks_the_lifecycle(self):
         a, b = self.ask(), self.ask(project="hub", expires="10m")
         asks.answer(self.store, a["id"], index=2, now=NOW)
@@ -198,8 +259,11 @@ class AsksTest(unittest.TestCase):
 
     # ---- the command line ----
     def cli(self, *args):
+        return self.cli_env({}, *args)
+
+    def cli_env(self, extra, *args):
         return subprocess.run([sys.executable, "-m", "zeus", *args], cwd=ROOT, capture_output=True, text=True,
-                              env=dict(self.env))
+                              env=dict(self.env, **extra))
 
     def test_the_command_line_round_trip(self):
         r = self.cli("ask", "--project", "zeus", "--title", 'Ship <b>"it"</b>?', "--option", "yes", "--option", "no",

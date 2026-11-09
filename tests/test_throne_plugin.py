@@ -253,8 +253,13 @@ class ThronePluginTest(unittest.TestCase):
                                     {"Tailscale-User-Login": "owner@example.com", "X-Forwarded-For": "203.0.113.7"})
         self.assertEqual(seen["argv"], ["zeus-test", "answer", aid, "--index", "2", "--user", "owner@example.com", "--ip", "203.0.113.7"])
         self.assertEqual((code, doc["ok"]), (200, True))
-        code, doc, seen = self.call("answer", {"id": aid, "index": 1}, rc=1, err="zeus answer: %s was already answered" % aid)
+        code, doc, seen = self.call("answer", {"id": aid, "index": 1}, {"Tailscale-User-Login": "owner@example.com",
+                                    "X-Forwarded-For": "203.0.113.7"}, rc=1, err="zeus answer: %s was already answered" % aid)
         self.assertEqual((doc["ok"], doc["code"]), (False, 1), "Zeus refuses a second answer; the plugin shows it")
+        for headers in (None, {}, {"X-Forwarded-For": "203.0.113.7"}, {"Tailscale-User-Login": "  "}):
+            code, doc, seen = self.call("answer", {"id": aid, "index": 1}, headers)
+            self.assertEqual((code, doc["ok"], seen), (403, False, {}), "a tap with no tailnet login never reaches Zeus")
+            self.assertIn("no tailnet login", doc["msg"])
         for body in ({"id": aid, "index": 0}, {"id": aid, "index": 9}, {"id": aid, "index": "1"}, {"id": aid, "index": True},
                      {"id": aid}, {"id": "20261021-090000-argus-ui-aaaaaaa", "index": 1}, {"id": "ask-../../x", "index": 1},
                      {"id": aid + " --index 1", "index": 1}):
