@@ -19,6 +19,8 @@ WAITING = ("pending", "held")      # held: approved by the owner, Janus failed t
 # Terminal states live in queue/.done/ (never deleted); only pending records sit in queue/ itself.
 DONE = ("refused", "superseded", "expired", "declined", "deployed", "failed", "rolled-back")
 MESSAGE_MAX = 64 * 1024
+STAGED_ONLY = ("%s is a staged-pack repository: its deploys come only from a pack staged on the server and "
+               "`zeus stage-request` (docs/design.md §15); nothing was fetched")
 GIT_TIMEOUT = 120
 
 
@@ -275,6 +277,8 @@ def admit(store, cfg, msg, now, name="request"):
     if repo is None:
         return store.write(_record(rid, msg, now, cfg, state="refused",
                                    reason="%s is not in repos.json; nothing was fetched" % repo_key))
+    if repo.staged:
+        return store.write(_record(rid, msg, now, cfg, state="refused", reason=STAGED_ONLY % repo_key))
     for older in store.pending(WAITING):
         if older["repo"] == repo_key and older["sha"] == sha:
             return store.write(_record(rid, msg, now, cfg, state="refused",
@@ -343,6 +347,8 @@ def line(rec):
         files = rec.get("files")
         extra = ", %d file%s" % (files, "" if files == 1 else "s") if isinstance(files, int) else ""
         rules = " (changes the realm's own rules)" if rec.get("rules_changed") else ""
+        if isinstance(rec.get("pack"), dict):
+            extra += ", pack %.1f MB, %s files" % ((rec["pack"].get("size") or 0) / 1e6, rec["pack"].get("files"))
         return "%s: pending (%s%s)%s; expires %s" % (rec["id"], what, extra, rules, rec["expires"])
     return "%s: %s (%s): %s" % (rec["id"], rec["state"], what, rec.get("reason") or "")
 

@@ -42,6 +42,9 @@ def request(store, cfg, repo_key, now=None, out=None):
         out("zeus request: %s is not in repos.json; nothing was fetched." % repo_key)
         return None
     repo = cfg.repos[repo_key]
+    if repo.staged:
+        out("zeus request: " + queue.STAGED_ONLY % repo_key + ".")
+        return None
     store.make_folders()
     fetch = queue.Fetch(store, repo)
     if not fetch.run():

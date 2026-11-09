@@ -40,7 +40,8 @@ class CliTest(unittest.TestCase):
 
     def test_every_subcommand_from_the_design_exists(self):
         wanted = {"queue", "request", "approve", "approve-release", "decline", "deploy", "deploy-run", "seen", "rollback", "status",
-                  "check-config", "init", "verify-log", "ask", "answer", "asks"}   # the decision inbox: docs/design.md §14
+                  "check-config", "init", "verify-log", "ask", "answer", "asks",   # the decision inbox: docs/design.md §14
+                  "stage-request"}                                                 # staged packs: docs/design.md §15
         parser = cli.build_parser()
         names = {name for action in parser._subparsers._group_actions for name in action.choices}
         self.assertEqual(wanted, names)
