@@ -23,9 +23,11 @@ REPO = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0
 WAITING = ("pending", "held")
 RUNNING = ("approved", "deploying")
 STAGES = ("fetch", "checkout", "build", "install", "health")
-# what each stage leaves in log/deploy-<id>.log (zeus/deploy.py): the stage has begun once its mark is there
-MARKS = (("fetch", "zeus: "), ("checkout", "checked out "), ("build", "running scripts/deploy.sh"),
-         ("install", "ZEUS_STAGE=install"), ("health", "health: "))
+# what each stage leaves in log/deploy-<id>.log (zeus/deploy.py): the stage has begun once one of its marks is there.
+# A staged pack (docs/design.md §15) has no checkout or build of its own: its pack check and install script stand in.
+MARKS = (("fetch", ("zeus: ",)), ("checkout", ("checked out ", "pack checked: ")),
+         ("build", ("running scripts/deploy.sh", "running the install script")),
+         ("install", ("ZEUS_STAGE=install",)), ("health", ("health: ",)))
 HISTORY = 60          # rows the page gets; everything stays in queue/.done/
 ASKED = 10            # answered and expired asks the page gets; every record stays in queue/
 TAIL = 80             # log lines the page gets
@@ -74,10 +76,21 @@ def _when(s):
         return None
 
 
+def _config():
+    return _read(os.path.expanduser(os.environ.get("ZEUS_CONFIG") or "~/.config/zeus/repos.json")) or {}
+
+
+def kinds():
+    """repos.json's kind per repository ("git" or "staged-pack"), for the page's wording only; Zeus decides."""
+    repos = _config().get("repos")
+    return {k: ("staged-pack" if isinstance(v, dict) and v.get("kind") == "staged-pack" else "git")
+            for k, v in (repos.items() if isinstance(repos, dict) else []) if isinstance(k, str)}
+
+
 def repo_keys():
     """The repositories Zeus deploys: repos.json's keys, plus any that have a state file (repos.json may be unreadable)."""
     keys = []
-    cfg = _read(os.path.expanduser(os.environ.get("ZEUS_CONFIG") or "~/.config/zeus/repos.json")) or {}
+    cfg = _config()
     if isinstance(cfg.get("repos"), dict):
         keys = [k for k in cfg["repos"] if isinstance(k, str) and REPO.match(k)]
     for p in sorted((data() / "state").glob("*--*.json")) if (data() / "state").is_dir() else []:
@@ -102,7 +115,7 @@ def log_tail(rid, n=TAIL):
 def stages(rec, lines):
     """The five stages as the log shows them: done, now, todo or failed. The record's state says how it ended."""
     text = "\n".join(lines)
-    reached = max([i for i, (_, mark) in enumerate(MARKS) if mark in text], default=-1)
+    reached = max([i for i, (_, marks) in enumerate(MARKS) if any(m in text for m in marks)], default=-1)
     state = rec.get("state")
     out = []
     for i, name in enumerate(STAGES):
@@ -122,12 +135,12 @@ def stages(rec, lines):
 
 def deployed_now():
     """Per repository: what runs (state/<owner>--<name>.json `deployed`) and what a rollback would put back (`previous`)."""
-    out = []
+    out, kind = [], kinds()
     for key in repo_keys():
         st = _read(data() / "state" / (key.replace("/", "--") + ".json")) or {}
         live = st.get("deployed") if isinstance(st.get("deployed"), dict) else None
         prev = st.get("previous") if isinstance(st.get("previous"), dict) else None
-        out.append({"repo": key, "deployed": live, "previous": prev})
+        out.append({"repo": key, "kind": kind.get(key, "git"), "deployed": live, "previous": prev})
     return out
 
 
