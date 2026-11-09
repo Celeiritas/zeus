@@ -281,7 +281,7 @@ Exit codes: 0 done · 1 refused (unknown, not open, already answered, expired, c
               "url": "git@github-game-zeus:you/game.git", "private": true, "key": "~/.config/zeus/keys/game",
               "staging": "~/.config/argus-ui/.staged-game",
               "install": "~/.config/zeus/install/game.sh",
-              "health": { "http": "http://127.0.0.1:8095/api/health" }, "services": ["argus-ui"] }
+              "health": { "service": "argus-ui" }, "services": ["argus-ui"] }
 ```
 | Field | Meaning |
 |---|---|
@@ -289,7 +289,7 @@ Exit codes: 0 done · 1 refused (unknown, not open, already answered, expired, c
 | `url`, `private`, `key` | As §2. Zeus still fetches `main` himself, into his bare mirror under `mirrors/` (there is no clone, so `path` fails `check-config` for this kind) |
 | `staging` | **The fixed staging folder**, absolute or `~/…`. `check-config`: a folder, not a symbolic link, owned by Zeus's user, not writable by group or others. Missing is a warning (make it before the first request) |
 | `install` | **The fixed install script**, absolute or `~/…`. `check-config`: a regular file, not a symbolic link, owned by Zeus's user, and neither it nor its folder writable by group or others; it may not sit inside `staging` (whoever stages must not be able to change what installs). Missing is a warning; Zeus refuses to deploy until it is there. Checked again at every run |
-| `health`, `services` | As §2: the same fixed list (`http` on 127.0.0.1, `service`, `exec` from the three agents) |
+| `health`, `services` | As §2: the same fixed list (`http` on 127.0.0.1, `service`, `exec` from the three agents). An `http` answer with a `version` must equal the pack's, so Elaia's own `api/health` (which says Elaia's version) is the wrong check for a plugin; `service` is the usual one |
 | `rules` | As §2; the diff comes from the mirror |
 `staging` and `install` are refused on a `git` repository. **Not in config, on purpose:** the pack's file name (Zeus builds it from the version and the commit, §15.3), the arguments the script gets and the order of the checks (fixed in code).
 

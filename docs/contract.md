@@ -62,6 +62,15 @@ The record, its states (`open` → `answered` | `expired`), its signature and it
 - `GET <base>/api/throne/summary` → `{ "asks": <open asks>, "deploys": <requests waiting for a yes>, "needs_you": <both>, "line": "<the status line>" }`. Only counts and the line; the shape only grows.
 - `POST <base>/api/throne/answer { "id": "ask-…", "index": 1..8 }` → the plugin runs `zeus answer <id> --index <n>` with who is asking from `tailscale serve`'s headers, and returns `{ ok, code, msg }` with what Zeus said. A request without a `Tailscale-User-Login` header is refused with 403 `{ ok: false, msg }` and Zeus is not run.
 
+## 3b. Staged packs (0.6.0): `zeus stage-request`
+The whole design is `docs/design.md` §15. What crosses the border:
+- **The session gives** `zeus stage-request <repo> --version <v> --sha <40 hex> [--tests "<one line>"]`, run on the server after staging `<staging>/<v>-<sha>.tgz` and `<staging>/<v>-<sha>.tgz.sha256` (`<staging>` is the repository's fixed folder in `repos.json`). No path, file name or command is ever part of a request. Exit 0 pending · 1 refused (a `refused` record says why) · 2 bad input (nothing read).
+- **The record** is §2's plus `"kind": "staged-pack"`, `"tests"` (the session's note, shown as text) and `"pack": { "name", "size", "mtime_ns", "sha256", "files", "unpacked", "checked_ns" }`. `checks` is `none`. Zeus acts on nothing in `tests`.
+- **The signed approval line** gains `"kind": "staged-pack"` and `"pack": { "sha256", "size" }`; `deploy-run` installs only a pack whose sha256 is the signed one.
+- **`state/<owner>--<name>.json`** entries of a staged-pack repository carry `"pack": "<sha256>"`.
+- **The install script** gets `install <Zeus's copy> <version> <sha>` or `rollback <version> <sha>` and `ZEUS_ID`, `ZEUS_SHA`, `ZEUS_VERSION`, `ZEUS_PREVIOUS`, `ZEUS_PREVIOUS_VERSION`, `ZEUS_PACK_FILES`, `ZEUS_PACK_SHA256`; it prints `ZEUS_STAGE=install` before its first change (§4a's table applies unchanged).
+- The Throne's `GET api/throne` passes the records as they are (with `kind`, `pack`, `tests`), and each `deployed` row gains `"kind": "git" | "staged-pack"` from `repos.json`, for the wording only.
+
 ## 4a. What is live: `state/<owner>--<name>.json`
 Written by `zeus deploy-run` after a deploy passes its health check:
 ```json
