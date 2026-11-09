@@ -2,7 +2,7 @@
 import argparse
 import sys
 
-from zeus import alert, approve, commands, config, deploy, init, queue, rollback, verify, version
+from zeus import alert, approve, asks, commands, config, deploy, init, queue, rollback, verify, version
 
 DESCRIPTION = ("Zeus deploys a commit only after the owner approved it, and can put the previous approved commit back. "
                "He never fetches from anywhere but the allowlisted repositories, never deploys a branch, never runs a "
@@ -96,6 +96,30 @@ def build_parser():
     p.add_argument("--key-file", metavar="FILE", help="the secret.env holding ZEUS_LOG_KEY (default ~/.config/zeus/secret.env)")
     p.add_argument("--quiet", action="store_true", help="print only the bad lines and the total")
     p.set_defaults(func=verify.main)
+    p = sub.add_parser("ask", help="ask the owner a question with options (the Throne's Needs your answer; tier 3, "
+                                  "no side effect): zeus ask --project zeus --title \"...\" --option yes --option no")
+    p.add_argument("--project", required=True, help="the asking project's id, e.g. zeus")
+    p.add_argument("--title", required=True, help="the question, one line")
+    p.add_argument("--option", action="append", required=True, help="an answer the owner can tap (2 to 8, repeat the flag)")
+    p.add_argument("--context", help="a few lines the owner reads before answering")
+    p.add_argument("--expires", default=asks.DEFAULT_EXPIRES, help="how long it stays open: 90m, 12h, 3d (default 3d)")
+    p.add_argument("--json", action="store_true", help="print the signed record")
+    p.set_defaults(func=asks.main_ask)
+    p = sub.add_parser("answer", help="answer an open ask, once (the Throne's option buttons run this)")
+    p.add_argument("id", help="ask-YYYYMMDD-HHMMSS-<project>")
+    p.add_argument("option", nargs="?", help="the option's exact text")
+    p.add_argument("--index", type=int, help="the option's number, from 1 (instead of its text)")
+    p.add_argument("--user", help=argparse.SUPPRESS)   # the Throne passes the tailnet login; from a shell it is $USER
+    p.add_argument("--ip", help=argparse.SUPPRESS)
+    p.set_defaults(func=asks.main_answer)
+    p = sub.add_parser("asks", help="list the asks: open ones (default) or all, with their answers; --json for sessions")
+    p.add_argument("id", nargs="?", help="just this ask")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--open", action="store_true", help="only the open asks (the default)")
+    g.add_argument("--all", action="store_true", help="open, answered and expired")
+    p.add_argument("--project", help="only this project's asks")
+    p.add_argument("--json", action="store_true", help="the records as a JSON list (an answer is data, never a command)")
+    p.set_defaults(func=asks.main_asks)
     p = sub.add_parser("seen", help="the owner has read Zeus's alert: clear it (Argus calms on his next refresh)")
     p.set_defaults(func=alert.main_seen)
     p = sub.add_parser("init", help="make the log signing key (secret.env, mode 600) and the data folders; never overwrites")

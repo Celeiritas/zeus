@@ -77,6 +77,8 @@ class Store:
         ones (Janus could not answer): they still expire, still count as a duplicate and are still superseded."""
         recs = []
         for p in sorted(self.queue.glob("*.json"), reverse=True):
+            if p.name.startswith("ask-"):       # the decision inbox's records (zeus/asks.py) share the folder
+                continue
             try:
                 rec = json.loads(p.read_text(encoding="utf-8"))
             except ValueError:
