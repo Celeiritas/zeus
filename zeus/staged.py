@@ -110,7 +110,8 @@ def digest(path, copy_to=None):
         except FileExistsError:
             raise Refused("Zeus's copy %s exists already; set it aside and approve again" % config.short(copy_to))
     try:
-        with open(path, "rb") as f:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
+        with os.fdopen(fd, "rb") as f:          # never through a link swapped in after the check
             while True:
                 chunk = f.read(CHUNK)
                 if not chunk:
