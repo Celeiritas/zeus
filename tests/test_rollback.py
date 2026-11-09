@@ -155,6 +155,24 @@ class RollbackTest(DeployBase):
         self.assertEqual(git("rev-parse", "HEAD", cwd=self.clone), first)
         self.assertIn("rolled back to you/app 4.9.0", self.out[-1])
 
+    # the line Zeus prints (issue #27's twin): who approved it, as the signed line has it
+    def test_the_rollback_line_names_who_approved_it(self):
+        self.live("4.9.0", "4.9.1")
+        self.assertEqual(self.roll(), 0, self.out)
+        rid = self.rollback_record()["id"]
+        self.assertEqual(self.out[-1], "%s: rollback of you/app 4.9.1 → 4.9.0 approved by %s; running as zeus-deploy-%s"
+                         % (rid, OWNER, rid))
+
+    def test_a_rollback_without_a_login_names_the_device(self):
+        self.live("4.9.0", "4.9.1")
+        with mock.patch.dict(os.environ, {"ZEUS_FAKE_JANUS_NODES": json.dumps({PHONE_IP: ["phone", None]})}):
+            self.assertEqual(self.roll(), 0, self.out)
+        rid = self.rollback_record()["id"]
+        self.assertEqual(self.out[-1], "%s: rollback of you/app 4.9.1 → 4.9.0 approved from phone (Janus named no "
+                                       "login); running as zeus-deploy-%s" % (rid, rid))
+        entry = [e for _, _, e in log.entries(self.store) if e["action"] == "rollback"][0]
+        self.assertIsNone(entry["by"]["user"])
+
     def test_rolling_back_twice_goes_one_step_further(self):
         a, b, c = self.live("4.9.0", "4.9.1", "4.9.2")
         self.assertEqual(self.roll(), 0, self.out)

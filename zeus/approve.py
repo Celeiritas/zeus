@@ -103,6 +103,16 @@ def start_deploy(rid):
     return True, "zeus-deploy-" + rid
 
 
+def by_words(by):
+    """Who approved, for the line Zeus prints (issue #27): "by <login>", the login the signed line carries. Over ssh
+    that is the one Janus read from whois, since nobody types a name there. When Janus allowed it without naming a login,
+    say what he did check (the device, else the address) and that no login was named: never Python's None, which reads
+    as if nobody approved, and never the shell's user, which is the server's account and not who Janus verified."""
+    if by.get("user"):
+        return "by %s" % by["user"]
+    return "from %s (Janus named no login)" % (by.get("node") or by.get("ip") or "an unknown address")
+
+
 def approve(store, cfg, rid, sha, user, ip, now=None, via="elaia", out=None, confirm=None):
     """The approval. Returns the exit status: 0 approved and the deploy started · 1 refused or held (the reason was
     printed and, for Janus's verdicts, kept on the record). Over ssh, user is None (Janus takes it from whois), sha may
@@ -201,7 +211,7 @@ def approve(store, cfg, rid, sha, user, ip, now=None, via="elaia", out=None, con
         return 1
     rec["deploy"] = {"started": True, "unit": text, "at": queue.stamp(queue.now_local())}
     store.write(rec)
-    out("%s: approved (%s %s) by %s; deploying as %s" % (rid, rec["repo"], rec["version"] or sha[:7], user, text))
+    out("%s: approved (%s %s) %s; deploying as %s" % (rid, rec["repo"], rec["version"] or sha[:7], by_words(by), text))
     return 0
 
 

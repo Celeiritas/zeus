@@ -74,6 +74,51 @@ class SshTest(ApproveBase):
         self.assertTrue(log.check(entry))
         self.assertEqual(len(self.runs()), 1)
 
+    # the line Zeus prints (issue #27): over ssh the user argument is None by design, so the name is Janus's answer
+    def test_the_approved_line_names_the_login_janus_read_from_whois(self):
+        sha, rec = self.pending()
+        self.assertEqual(self.approve_ssh(rec["id"]), 0, self.out)
+        self.assertEqual(self.out[-1], "%s: approved (you/app 4.9.0) by %s; deploying as zeus-deploy-%s"
+                         % (rec["id"], OWNER, rec["id"]))
+
+    def test_deploy_in_one_go_names_the_login_too(self):
+        self.remote.commit("4.9.0")
+        self.out = []
+        code = approve.deploy(self.store, self.cfg, "app", self.ssh(PHONE_IP), now=NOW, out=self.out.append, confirm=yes())
+        self.assertEqual(code, 0, self.out)
+        self.assertIn(": approved (you/app 4.9.0) by %s; deploying as zeus-deploy-" % OWNER, self.out[-1])
+        self.assertNotIn("None", self.out[-1])
+
+    def test_without_a_login_the_line_names_the_device(self):
+        """Janus allowed it and named the device but no login: the line says what was checked and that no login was
+        named, as the signed line has it (by.user is null). Never Python's None, never the shell's user."""
+        sha, rec = self.pending()
+        with mock.patch.dict(os.environ, {"ZEUS_FAKE_JANUS_NODES": json.dumps({PHONE_IP: ["phone", None]})}):
+            self.assertEqual(self.approve_ssh(rec["id"]), 0, self.out)
+        self.assertEqual(self.out[-1], "%s: approved (you/app 4.9.0) from phone (Janus named no login); deploying as "
+                                       "zeus-deploy-%s" % (rec["id"], rec["id"]))
+        entry = log.entries(self.store)[0][2]
+        self.assertIsNone(entry["by"]["user"], "the screen and the signed line agree: no login was named")
+        self.assertEqual(entry["by"]["node"], "phone")
+
+    def test_without_a_login_or_a_device_the_line_gives_the_address(self):
+        sha, rec = self.pending()
+        with mock.patch.dict(os.environ, {"ZEUS_FAKE_JANUS": "garbage"}):      # exit 0 without JSON: allowed, nothing named
+            self.assertEqual(self.approve_ssh(rec["id"]), 0, self.out)
+        self.assertEqual(self.out[-1], "%s: approved (you/app 4.9.0) from %s (Janus named no login); deploying as "
+                                       "zeus-deploy-%s" % (rec["id"], PHONE_IP, rec["id"]))
+        self.assertNotIn("None", self.out[-1])
+
+    def test_by_words(self):
+        by = {"user": OWNER, "ip": PHONE_IP, "via": "ssh", "node": "phone"}
+        self.assertEqual(approve.by_words(by), "by " + OWNER)
+        self.assertEqual(approve.by_words(dict(by, user=None)), "from phone (Janus named no login)")
+        self.assertEqual(approve.by_words(dict(by, user="")), "from phone (Janus named no login)")
+        self.assertEqual(approve.by_words({"user": None, "ip": PHONE_IP, "via": "ssh"}),
+                         "from %s (Janus named no login)" % PHONE_IP)
+        self.assertEqual(approve.by_words({"user": None, "ip": None, "via": "ssh"}),
+                         "from an unknown address (Janus named no login)")
+
     def test_refused_from_another_node(self):
         sha, rec = self.pending()
         self.assertEqual(self.approve_ssh(rec["id"], ip=OTHER_IP), 1)

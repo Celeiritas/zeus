@@ -91,8 +91,8 @@ def rollback(store, cfg, name, who, sha=None, now=None, out=None, confirm=None):
                      % (key.split("/")[-1], text), now)
         out("zeus rollback: approved and logged, but it did not start: %s" % text)
         return 1
-    out("%s: rollback of %s %s → %s approved by %s; running as %s" % (rid, key, live.get("version") or live["sha"][:7],
-                                                                      rec["version"] or prev["sha"][:7], by["user"], text))
+    out("%s: rollback of %s %s → %s approved %s; running as %s"
+        % (rid, key, live.get("version") or live["sha"][:7], rec["version"] or prev["sha"][:7], approve.by_words(by), text))
     return 0
 
 
