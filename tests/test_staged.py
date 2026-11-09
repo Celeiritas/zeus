@@ -175,7 +175,7 @@ class StageRequestTest(StagedBase):
         absolute.size = 3
         cases.append(([(absolute, b"bad")], "a name outside its own folder"))
         link = tarfile.TarInfo("./models/link.glb")
-        link.type, link.linkname = tarfile.SYMTYPE, "/home/someone/.ssh/id_ed25519"
+        link.type, link.linkname = tarfile.SYMTYPE, "../../.ssh/id_ed25519"
         cases.append(([(link, None)], "a link, device or pipe"))
         hard = tarfile.TarInfo("./hard")
         hard.type, hard.linkname = tarfile.LNKTYPE, "./VERSION"
