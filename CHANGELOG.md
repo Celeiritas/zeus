@@ -5,6 +5,7 @@
 - **When there is no login to show**, the line says what Janus did check and that the name is missing: `… from <device> (Janus named no login); …`, or the client address when he named no device either. It is never Python's `None` (which reads as "nobody") and never the shell's user (the server's account, not who Janus verified), so the screen always agrees with the signed line, whose `by.user` is null in that case. It is a safeguard: today's Janus refuses a device the tailnet reports no login for, so the wording shows only if Janus exits 0 with an answer Zeus cannot read a login from.
 - Tests: over ssh the line names the whois login (`approve` and the one-line `deploy`); no login but a device; neither login nor device; `by_words`; the rollback line with and without a login. The new tests failed on 0.6.0 with `by None` before the fix.
 - **Docs say what is built** (plan task Z6): the README's "Where it stands" lists what is built, what is not, and that 0.6.0 is installed on `{{SERVER}}`; `docs/design.md` §13 (status of each milestone, what is in use on the server), §11 (the tree as it is: the modules of 0.3 to 0.6, no `scripts/deploy.sh` in this repository), §9 (where the Throne differs from the design: no inline diff of rules files, the hold's `aria-label`, the pill's words, History's 60 rows, two live regions; `recheck` runs `zeus request`), §4 (the printed line), §14 and §15 (status lines); `docs/contract.md` §4 (`rollback`, `ask`, `answer` and `ask-expired` lines exist; `by.user` may be null) and §6 (the printed line). No behaviour changes besides the two printed lines.
+- `bash scripts/check-private.sh --tree` is clean again: two older lines (the 0.4.3 entry below and a comment in `tests/test_alert.py`) now use the `{{SERVER}}` placeholder.
 
 ## 0.6.0 – 2026-11-09
 - **Staged packs** (`docs/design.md` §15, the game session's request of 2026-11-04): a repository whose build needs files only `{{PC}}` has is deployed from an immutable pack the session stages on the server, still only after the owner's hold and only for a commit on `main`.
@@ -42,7 +43,7 @@
 - Tests: `test_programs_are_found_in_local_bin_when_path_is_short`
 
 ## 0.4.3 – 2026-10-23
-- **Fix:** `scripts/install.sh` always builds before it installs. It used to build only when `dist/zeus` was missing, so after a `git pull` it installed the old build again (LeafyBard ran 0.3.3 with 0.4.2 pulled; no zeus code had changed since, so nothing behaved differently, but the next change would have been missed)
+- **Fix:** `scripts/install.sh` always builds before it installs. It used to build only when `dist/zeus` was missing, so after a `git pull` it installed the old build again (`{{SERVER}}` ran 0.3.3 with 0.4.2 pulled; no zeus code had changed since, so nothing behaved differently, but the next change would have been missed)
 - Tests: `test_install_always_builds`
 
 ## 0.4.2 – 2026-10-23
