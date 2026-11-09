@@ -75,10 +75,10 @@ def locate(repo, version, sha):
         raise Refused("the staging folder %s %s" % (config.short(repo.staging) if repo.staging else "", problems[0]))
     pack = repo.staging / name
     sumf = repo.staging / (name + ".sha256")
+    st = _plain(pack)                       # a link is refused here, in those words
+    _plain(sumf)
     if os.path.dirname(os.path.realpath(pack)) != os.path.realpath(repo.staging):
         raise Refused("%s is not directly in the staging folder" % name)
-    st = _plain(pack)
-    _plain(sumf)
     return pack, st, sumf
 
 
