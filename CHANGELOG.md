@@ -10,6 +10,7 @@
 - **`GET api/throne/summary`**: `{asks, deploys, needs_you, line}` for Elaia's Home or any page that only needs counts. Home's own "Needs you" counts asks too ("Answer 1 question", "Answer 2, review 1").
 - **Design:** `docs/design.md` §14 "Tiers" (proposed; Dax to confirm the second tap for tier 1): review, rules, power and decisions, how a tier is chosen (by Zeus, never from a message), expiry and Janus per tier, and what a hostile message can do. §13 now says what is built.
 - **Tests:** `tests/test_asks.py` (open, answered, expired, second answer refused, simultaneous answers, a changed record refused and named by `verify-log`, bad fields, the command line); `tests/test_throne_plugin.py` (asks on the page as data only, Home and summary counts, the `answer` arguments and refusals); `tests/throne/throne.test.js` (the column above Waiting, escaping, keyboard path with Enter and Space, a second answer refused, 375 px, reduced motion).
+- **CI:** the `throne-page` job runs on `ubuntu-24.04` (as argus-ui does): `ubuntu-latest` became 26.04, where Playwright 1.56 cannot install Chromium.
 - **Fix (tests):** five decline and approve tests made their request at the fixed test time and decided at the real time, so they failed once 72 hours had passed (main's CI was red since 2026-10-24). They now use the test clock.
 
 ## 0.4.4 – 2026-10-24
