@@ -1,4 +1,6 @@
 # What a repository's `scripts/deploy.sh` must honour
+(For a repository of kind `staged-pack` Zeus runs no script from the repository: he runs one fixed install script on a pack staged on the server; see `docs/design.md` §15 and `examples/install-pack.sh.example`. The stage line and the hold vs rollback table below apply to that script too.)
+
 Zeus runs one script per repository, always the same path, always from the commit the owner approved: `scripts/deploy.sh` (fixed in code; no config can name another). [`examples/deploy.sh.example`](../examples/deploy.sh.example) is a template; argus-ui's own script (4.9.1 and later) is a real one.
 
 ## How Zeus runs it

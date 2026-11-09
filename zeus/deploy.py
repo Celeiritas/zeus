@@ -14,7 +14,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from zeus import alert, approve, config, log, queue, version
+from zeus import alert, approve, config, log, queue, staged, version
 
 STAGE_LINE = "ZEUS_STAGE=install"
 HISTORY = 10
@@ -89,6 +89,8 @@ def record_deployed(store, rec, now):
     st = read_state(store, rec["repo"])
     entry = {"sha": rec["sha"], "version": rec["version"], "at": queue.stamp(now), "id": rec["id"],
              "approval": (rec.get("approval") or {}).get("by")}
+    if isinstance(rec.get("pack"), dict):
+        entry["pack"] = rec["pack"].get("sha256")
     old = st.get("deployed")
     if old and old.get("sha") != rec["sha"]:
         st["previous"] = old
@@ -115,6 +117,9 @@ def approved_in_log(store, rec):
     for _, _, entry in log.entries(store):
         if entry and entry.get("sig") == sig and entry.get("id") == rec["id"] and entry.get("sha") == rec["sha"] \
                 and entry.get("action") == rec.get("action", "deploy") and entry.get("action") in ("deploy", "rollback"):
+            if rec.get("kind") == config.STAGED and entry["action"] == "deploy" and \
+                    (entry.get("pack") or {}).get("sha256") != (rec.get("pack") or {}).get("sha256"):
+                return False                     # the approval was for another pack
             return log.check(entry)
     return False
 
@@ -183,9 +188,14 @@ def checkout(store, repo, rec, out, on_main=True):
 def run_script(path, rec, timeout, runlog):
     """bash scripts/deploy.sh --no-pull in the clone. Returns (exit code or None on timeout, install stage reached)."""
     env = dict(os.environ, ZEUS_ID=rec["id"], ZEUS_SHA=rec["sha"], ZEUS_PREVIOUS=rec.get("previous") or "")
+    return run_bash([config.DEPLOY_SCRIPT, "--no-pull"], path, env, timeout, runlog)
+
+
+def run_bash(args, cwd, env, timeout, runlog):
+    """bash <args> with the output into the run log. Returns (exit code or None on timeout, install stage reached)."""
     bash = shutil.which("bash") or "bash"          # which(): on a PC, PATH's Git Bash, not System32's WSL bash
     kw = {"start_new_session": True} if os.name != "nt" else {}
-    p = subprocess.Popen([bash, config.DEPLOY_SCRIPT, "--no-pull"], cwd=str(path), env=env, stdout=subprocess.PIPE,
+    p = subprocess.Popen([bash] + list(args), cwd=str(cwd), env=env, stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True, encoding="utf-8",
                          errors="replace", **kw)
     stage = {"install": False}
@@ -210,6 +220,10 @@ def run_script(path, rec, timeout, runlog):
         p.wait()
         code = None
     t.join(timeout=5)
+    try:
+        p.stdout.close()
+    except OSError:
+        pass
     return code, stage["install"]
 
 
@@ -294,6 +308,8 @@ def run(store, cfg, rid, out=None):
         try:
             if repo is None:
                 raise Failed("%s is not in repos.json; nothing was run." % rec["repo"])
+            if not rollback and (rec.get("kind") == config.STAGED) != repo.staged:
+                raise Failed("%s changed kind in repos.json since this request; nothing was run." % rec["repo"])
             shape, value = check_health_config(repo)
             if rollback:
                 prev = read_state(store, rec["repo"]).get("previous") or {}
@@ -303,8 +319,11 @@ def run(store, cfg, rid, out=None):
                 say("rolling %s back to %s (%s)" % (rec["repo"], rec["version"] or "", rec["sha"][:7]))
             else:
                 say("deploying %s %s (%s)" % (rec["repo"], rec["version"] or "", rec["sha"][:7]))
-            path, ver = checkout(store, repo, rec, say, on_main=not rollback)
-            stage = attempt(path, rec, ver, shape, value, cfg, runlog, say)
+            if repo.staged:
+                stage = attempt_staged(store, repo, rec, live, rollback, shape, value, cfg, runlog, say)
+            else:
+                path, ver = checkout(store, repo, rec, say, on_main=not rollback)
+                stage = attempt(path, rec, ver, shape, value, cfg, runlog, say)
         except Failed as e:
             now = queue.now_local()
             stage = stage or e.after_install
@@ -369,11 +388,16 @@ def attempt(path, rec, ver, shape, value, cfg, runlog, say):
     """Run the script on what is checked out and wait for health. Returns the install stage; raises Failed."""
     say("running %s --no-pull" % config.DEPLOY_SCRIPT)
     code, stage = run_script(path, rec, cfg.deploy_timeout_s, runlog)
+    return judge(config.DEPLOY_SCRIPT, code, stage, ver, shape, value, cfg, runlog)
+
+
+def judge(what, code, stage, ver, shape, value, cfg, runlog):
+    """The script's exit and the health check: returns the install stage, or raises Failed (hold vs roll back)."""
     if code is None:
-        raise Failed("%s did not finish in %g s and was stopped" % (config.DEPLOY_SCRIPT, cfg.deploy_timeout_s)
+        raise Failed("%s did not finish in %g s and was stopped" % (what, cfg.deploy_timeout_s)
                      + (", after the install had begun." if stage else "."), after_install=True)
     if code != 0:
-        raise Failed("%s exited %d %s." % (config.DEPLOY_SCRIPT, code, "after the install had begun" if stage
+        raise Failed("%s exited %d %s." % (what, code, "after the install had begun" if stage
                      else "before the install began, so nothing was changed"), after_install=stage)
     why = wait_healthy(shape, value, ver, cfg.health_wait_s, runlog)
     if why:
@@ -390,15 +414,55 @@ def restore(store, repo, rec, live, cfg, runlog, say):
     old = live.get("version") or live["sha"][:7]
     say("putting back %s (%s), the commit that was live before this run, because the install of %s had begun"
         % (old, live["sha"][:7], rec["version"] or rec["sha"][:7]))
-    back = {"id": rec["id"], "sha": live["sha"], "previous": rec["sha"], "repo": rec["repo"]}
+    back = {"id": rec["id"], "sha": live["sha"], "previous": rec["sha"], "repo": rec["repo"],
+            "version": live.get("version") or ""}
     try:
         shape, value = check_health_config(repo)
-        path, ver = checkout(store, repo, back, say, on_main=False)
-        attempt(path, back, ver, shape, value, cfg, runlog, say)
+        if repo.staged:             # the previous set-aside copy, through the same fixed install script
+            attempt_staged(store, repo, back, {"sha": rec["sha"], "version": rec.get("version")}, True, shape, value,
+                           cfg, runlog, say)
+        else:
+            path, ver = checkout(store, repo, back, say, on_main=False)
+            attempt(path, back, ver, shape, value, cfg, runlog, say)
     except Failed as e:
         say("putting back %s failed too: %s" % (old, e))
         return False
     return True
+
+
+def attempt_staged(store, repo, rec, current, rollback, shape, value, cfg, runlog, say):
+    """A staged pack (docs/design.md §15.4): the fixed install script, checked again; for an install, main fetched
+    again and the pack copied into Zeus's own folder while hashing, then checked on that copy; then
+    `bash <install> install <copy> <version> <sha>` or `bash <install> rollback <version> <sha>` and the health
+    check. current is what runs now (ZEUS_PREVIOUS). Returns the install stage; raises Failed."""
+    problems = config.install_problems(repo.install, repo.staging)
+    if problems:
+        raise Failed("the install script %s %s Nothing was run." % (config.short(repo.install) if repo.install else "",
+                                                                    problems[0]))
+    packs = store.data / "packs"
+    packs.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ, ZEUS_ID=rec["id"], ZEUS_SHA=rec["sha"], ZEUS_VERSION=rec.get("version") or "",
+               ZEUS_PREVIOUS=(current or {}).get("sha") or "", ZEUS_PREVIOUS_VERSION=(current or {}).get("version") or "")
+    if rollback:
+        args = ["rollback", rec.get("version") or "", rec["sha"]]
+    else:
+        fetch = queue.Fetch(store, repo)
+        if not fetch.run():
+            raise Failed(fetch.error)
+        if not fetch.on_main(rec["sha"]):
+            raise Failed("commit %s is not on %s of %s; nothing was run." % (rec["sha"][:7], config.BRANCH, rec["repo"]))
+        copy = packs / (rec["id"] + ".tgz")
+        try:
+            got = staged.verify(rec, repo, copy_to=copy)
+        except staged.Refused as e:
+            raise Failed("%s; nothing was run." % e)
+        say("pack checked: %s, sha256 %s, %s files, VERSION %s; installing from Zeus's copy %s"
+            % (rec["pack"]["name"], got[:12], rec["pack"]["files"], rec["version"], config.short(copy)))
+        env.update(ZEUS_PACK_FILES=str(rec["pack"]["files"]), ZEUS_PACK_SHA256=got)
+        args = ["install", copy.as_posix(), rec["version"], rec["sha"]]
+    say("running the install script %s %s %s" % (config.short(repo.install), args[0], args[-2]))
+    code, stage = run_bash([str(repo.install)] + args, packs, env, cfg.deploy_timeout_s, runlog)
+    return judge("the install script", code, stage, rec.get("version") or None, shape, value, cfg, runlog)
 
 
 def record_rolled_back(store, rec, now):

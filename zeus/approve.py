@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from zeus import alert, commands, config, log, queue, version
+from zeus import alert, commands, config, log, queue, staged, version
 
 JANUS_TIMEOUT = 30
 HELD = "held"                      # Janus could not answer; stays in queue/, approvable again, Argus glares
@@ -138,6 +138,22 @@ def approve(store, cfg, rid, sha, user, ip, now=None, via="elaia", out=None, con
         store.write(rec)
         out("zeus approve: " + rec["reason"])
         return 1
+    repo = cfg.repos[rec["repo"]]
+    if (rec.get("kind") == config.STAGED) != repo.staged:
+        rec["state"], rec["reason"] = "refused", ("%s changed kind in repos.json since this request; a new request is "
+                                                  "needed" % rec["repo"])
+        store.write(rec)
+        out("zeus approve: " + rec["reason"])
+        return 1
+    if repo.staged:                 # design §15.4: the pack is still exactly the one the request recorded
+        try:
+            staged.verify(rec, repo)
+        except staged.Refused as e:
+            rec["state"], rec["reason"] = "refused", ("%s; nothing was approved. Stage the pack again and run zeus "
+                                                      "stage-request" % e)
+            store.write(rec)
+            out("zeus approve: " + rec["reason"])
+            return 1
     if confirm is not None and not confirm(rec):
         out("zeus approve: cancelled; nothing was approved.")
         return 1
@@ -162,9 +178,12 @@ def approve(store, cfg, rid, sha, user, ip, now=None, via="elaia", out=None, con
     by = {"user": user or janus.user, "ip": ip, "via": via}
     if janus.node:
         by["node"] = janus.node
+    line = {"t": queue.stamp(now), "id": rid, "action": "deploy", "repo": rec["repo"], "sha": sha,
+            "version": rec["version"], "by": by, "janus": "allowed", "zeus": version()}
+    if repo.staged:
+        line.update(kind=config.STAGED, pack={"sha256": rec["pack"]["sha256"], "size": rec["pack"]["size"]})
     try:
-        entry = log.append(store, {"t": queue.stamp(now), "id": rid, "action": "deploy", "repo": rec["repo"], "sha": sha,
-                                   "version": rec["version"], "by": by, "janus": "allowed", "zeus": version()}, when=now)
+        entry = log.append(store, line, when=now)
     except log.LogError as e:
         out("zeus approve: " + str(e))
         return 1
@@ -217,6 +236,8 @@ def ask(rec, read=None, write=None):
     files = rec.get("files")
     extra = ", %d file%s" % (files, "" if files == 1 else "s") if isinstance(files, int) else ""
     rules = ", changes the realm's own rules" if rec.get("rules_changed") else ""
+    if isinstance(rec.get("pack"), dict):
+        extra += ", pack %s, %s files" % (staged.mb(rec["pack"].get("size")), rec["pack"].get("files"))
     write("Deploy %s %s (%s%s%s)? type yes: " % (rec["repo"], rec.get("version") or "", rec["sha"][:7], extra, rules))
     try:
         answer = read()

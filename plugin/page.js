@@ -34,6 +34,8 @@ leafy.register('throne', (() => {
     const m = Math.round((Date.parse(iso) - Date.now()) / 60000); if (!(m > 0)) return 'expires now';
     return `expires in ${m < 60 ? `${m} min` : m < 48 * 60 ? `${Math.round(m / 60)} h` : `${Math.round(m / 1440)} d`}`;
   }
+  const staged = r => r && r.kind === 'staged-pack';   // docs/design.md §15: a pack built on the PC, no "check main again"
+  const mb = n => Number.isFinite(n) ? `${(n / 1e6).toFixed(1)} MB` : '? MB';
   const by = a => a && a.user ? ` by ${e(a.user)}${a.node ? ` · ${e(a.node)}` : ''}${a.via ? ` (${e(a.via)})` : ''}` : '';
   const when = r => (r.deploy && (r.deploy.finished || r.deploy.at)) || (r.approval && r.approval.at) || r.seen || '';
 
@@ -63,17 +65,18 @@ leafy.register('throne', (() => {
     const refused = r.janus && r.janus.verdict === 'refused' && (r.janus.reasons || []).length;
     const clog = (r.changelog || []).slice(0, 10).map(l => `<li>${e(String(l).replace(/^\s*[-*]\s*/, ''))}</li>`).join('');
     const files = Number.isInteger(r.files) ? plural(r.files, 'file') + ' changed' : 'files: git could not say';
+    const pack = staged(r) && r.pack ? `<p class="meta facts pack"><span>Pack ${e(mb(r.pack.size))} · ${e(plural(Number(r.pack.files) || 0, 'file'))}</span><span>${r.tests ? `Tests: ${e(r.tests)}` : 'No tests reported'} <span class="sr">(as the session reported them)</span></span></p>` : '';
     return `<li class="tablet" data-id="${e(r.id)}">
       <div class="thead"><h4>${e(name(r))} <b>${e(ver(r))}</b></h4>${chip(r.state, STATE)}</div>
       <p class="subj">${e(r.subject)} <span class="meta">· ${commit(r)}</span></p>
       ${clog ? `<ul class="clog" aria-label="What changed">${clog}</ul>` : ''}
-      <p class="meta facts">${chip(r.checks || 'none', CHECKS)}<span>${e(files)}</span><span>${e(until(r.expires))}</span></p>
+      <p class="meta facts">${staged(r) ? '' : chip(r.checks || 'none', CHECKS)}<span>${e(files)}</span><span>${e(until(r.expires))}</span></p>${pack}
       ${(r.rules_changed || []).length ? `<p class="rules"><span aria-hidden="true">⚑</span> <b>Changes the realm's own rules:</b> ${r.rules_changed.map(f => `<code>${e(f)}</code>`).join(', ')}. Read those files before you hold.</p>` : ''}
       ${r.state === 'held' ? '<p class="note">Janus could not answer last time, so Zeus held it. Hold Deploy again once Janus is back.</p>' : ''}
       ${refused ? `<div class="note bad"><b>Janus refused the last approval:</b><ul>${r.janus.reasons.map(x => `<li>${e(x)}</li>`).join('')}</ul></div>` : ''}
       <div class="acts"><button type="button" class="go">Deploy ${e(name(r))} ${e(ver(r))}</button>
         <button type="button" class="no" aria-expanded="false">Decline</button>
-        <button type="button" class="re" data-repo="${e(r.repo)}">Check main again</button></div>
+        ${staged(r) ? '' : `<button type="button" class="re" data-repo="${e(r.repo)}">Check main again</button>`}</div>
       <form class="why" hidden><fieldset><legend>Why not deploy ${e(name(r))} ${e(ver(r))}?</legend>
         ${REASONS.map(([v, l], i) => `<label><input type="radio" name="why-${e(r.id)}" value="${v}" ${i ? '' : 'checked'}> ${l}</label>`).join('')}</fieldset>
         <div class="acts"><button type="submit">Decline ${e(name(r))} ${e(ver(r))}</button><button type="button" class="keep">Keep it waiting</button></div></form>
@@ -94,12 +97,13 @@ leafy.register('throne', (() => {
       <h4>${e(k)}</h4>
       ${l ? `<p><b>${e(ver(l))}</b> <span class="meta">(${commit({...l, repo: d.repo})}) since ${e(ago(l.at))}${by(l.approval)}</span></p>` : '<p class="meta">Nothing deployed by Zeus yet.</p>'}
       <div class="acts">${p ? `<button type="button" class="back" data-sha="${e(p.sha)}">Roll back to ${e(ver(p))}</button>` : ''}
-        <button type="button" class="re" data-repo="${e(d.repo)}">Check main again</button></div>
+        ${staged(d) ? '' : `<button type="button" class="re" data-repo="${e(d.repo)}">Check main again</button>`}</div>
+      ${staged(d) ? '<p class="meta">A new version comes from a pack staged by its session.</p>' : ''}
       ${l && !p ? '<p class="meta">Nothing earlier to roll back to.</p>' : ''}
     </li>`;
   }
   function row(r) {
-    const re = ['expired', 'superseded'].includes(r.state);
+    const re = ['expired', 'superseded'].includes(r.state) && !staged(r);
     return `<li class="hrow" data-id="${e(r.id)}">
       <div class="thead"><span>${chip(r.state, STATE)} <b>${e(name(r))} ${e(ver(r))}</b>${r.action === 'rollback' ? ' <span class="meta">(roll back)</span>' : ''}</span><span class="meta">${e(ago(when(r)))}</span></div>
       ${r.reason ? `<p class="meta">${e(r.reason)}</p>` : ''}
