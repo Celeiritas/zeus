@@ -1,0 +1,91 @@
+#!/bin/bash
+# install-pack.sh – the fixed install script Zeus runs for one staged-pack repository (docs/design.md §15.5).
+# Copy it to the "install" path of that repository in repos.json (e.g. ~/.config/zeus/install/game.sh), set NAME and
+# CHECK_FILE below, chmod 755 (never group- or world-writable: `zeus check-config` refuses that). It never deletes:
+# the live copy is set aside, and a rollback moves a set-aside copy back.
+#
+#   bash install-pack.sh install <pack.tgz> <version> <sha>    Zeus's own, already checked copy of the staged pack
+#   bash install-pack.sh rollback <version> <sha>              the newest set-aside copy of that version back
+#
+# Zeus passes ZEUS_ID, ZEUS_SHA, ZEUS_VERSION, ZEUS_PREVIOUS / ZEUS_PREVIOUS_VERSION (what runs now, or empty),
+# ZEUS_PACK_FILES (the files he counted in the pack) and ZEUS_PACK_SHA256. Print ZEUS_STAGE=install before the first
+# change: a failure before it changes nothing (Zeus holds), one after it makes Zeus put the previous version back.
+set -euo pipefail
+NAME=game                                         # the plugin folder's name
+ROOT="$HOME/.config/argus-ui"                     # where the plugin folder's parent and the set-aside copies live
+LIVE="$ROOT/plugins/$NAME"
+CHECK_FILE=models/hero.glb                        # one big file whose bytes are checked after unpacking ("" = none);
+                                                  # looked up in assets.json when its name is content-hashed
+umask 022
+
+say() { echo "install-pack: $*"; }
+fail() { echo "install-pack: $*" >&2; exit 1; }
+stamp() { date +%Y%m%d-%H%M%S; }
+# A new, dated folder name that does not exist yet (two runs in one second get -2, -3).
+fresh() { local base="$1" d="$1" n=1; while [ -e "$d" ]; do n=$((n + 1)); d="$base-$n"; done; echo "$d"; }
+version_of() { [ -f "$1/VERSION" ] && tr -d '\r\n' < "$1/VERSION" || true; }
+# Set the live copy aside, with the commit it was beside it (never inside it: the folder is served).
+set_aside() {
+  [ -d "$LIVE" ] || return 0
+  local aside; aside=$(fresh "$ROOT/.set-aside-$(stamp)-$NAME")
+  mkdir -p "$aside"
+  mv "$LIVE" "$aside/$NAME"
+  if [ -n "${1:-}" ]; then echo "$1" > "$aside/zeus-sha"; fi
+  say "set aside $(version_of "$aside/$NAME") in $aside"
+}
+
+mode=${1:-}
+case "$mode" in
+install)
+  [ $# -eq 4 ] || fail "usage: install <pack.tgz> <version> <sha>"
+  pack=$2 version=$3 sha=$4
+  [ -f "$pack" ] || fail "no pack at $pack"
+  mkdir -p "$ROOT/plugins"
+  incoming=$(fresh "$ROOT/.incoming-$(stamp)-$NAME")
+  mkdir "$incoming"
+  # Unpack and check before anything that runs is touched.
+  (cd "$(dirname "$pack")" && tar -xzf "$(basename "$pack")" -C "$incoming" --no-same-owner) || fail "unpacking failed; nothing was changed ($incoming)"
+  got=$(version_of "$incoming")
+  [ "$got" = "$version" ] || fail "VERSION in the pack is '$got', not $version; nothing was changed ($incoming)"
+  files=$(find "$incoming" -type f | wc -l | tr -d ' ')
+  [ -z "${ZEUS_PACK_FILES:-}" ] || [ "$files" = "$ZEUS_PACK_FILES" ] || fail "$files files unpacked, the pack has $ZEUS_PACK_FILES; nothing was changed ($incoming)"
+  if [ -n "$CHECK_FILE" ]; then
+    name=$CHECK_FILE
+    if [ -f "$incoming/assets.json" ]; then
+      hashed=$(tr -d '\n' < "$incoming/assets.json" | sed -n "s|.*\"$CHECK_FILE\" *: *\"\([^\"]*\)\".*|\1|p")
+      [ -n "$hashed" ] && name=$hashed
+    fi
+    [ -f "$incoming/$name" ] || fail "$name is missing from the pack; nothing was changed ($incoming)"
+    want=$( (cd "$(dirname "$pack")" && { tar -xzOf "$(basename "$pack")" "./$name" 2>/dev/null || tar -xzOf "$(basename "$pack")" "$name"; }) | wc -c | tr -d ' ') ||
+      fail "cannot read $name from the pack; nothing was changed ($incoming)"
+    have=$(wc -c < "$incoming/$name" | tr -d ' ')
+    [ "$want" = "$have" ] || fail "$name is $have bytes, the pack says $want; nothing was changed ($incoming)"
+  fi
+  say "checked $NAME $version: $files files, VERSION $got${CHECK_FILE:+, $name $have bytes}"
+  echo "ZEUS_STAGE=install"
+  set_aside "${ZEUS_PREVIOUS:-}"
+  mv "$incoming" "$LIVE"
+  [ "$(version_of "$LIVE")" = "$version" ] || fail "after the swap $LIVE says '$(version_of "$LIVE")'"
+  say "installed $NAME $version (${sha:0:7}) in $LIVE"
+  ;;
+rollback)
+  [ $# -eq 3 ] || fail "usage: rollback <version> <sha>"
+  version=$2 sha=$3
+  pick=""
+  while IFS= read -r d; do
+    [ "$(version_of "$d/$NAME")" = "$version" ] || continue
+    if [ -f "$d/zeus-sha" ] && [ -n "$(tr -d '\r\n' < "$d/zeus-sha")" ] && [ "$(tr -d '\r\n' < "$d/zeus-sha")" != "$sha" ]; then continue; fi
+    pick=$d; break
+  done < <(ls -1d "$ROOT"/.set-aside-*-"$NAME" "$ROOT"/.set-aside-*-"$NAME"-[0-9]* 2>/dev/null | sort -r)
+  [ -n "$pick" ] || fail "no set-aside copy of $NAME $version (${sha:0:7}) in $ROOT; nothing was changed"
+  say "putting back $NAME $version from $pick"
+  echo "ZEUS_STAGE=install"
+  set_aside "${ZEUS_PREVIOUS:-}"
+  mv "$pick/$NAME" "$LIVE"
+  [ "$(version_of "$LIVE")" = "$version" ] || fail "after the swap $LIVE says '$(version_of "$LIVE")'"
+  say "rolled back $NAME to $version (${sha:0:7}); $pick keeps its note"
+  ;;
+*)
+  fail "usage: install <pack.tgz> <version> <sha> | rollback <version> <sha>"
+  ;;
+esac

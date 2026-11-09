@@ -2,7 +2,7 @@
 import argparse
 import sys
 
-from zeus import alert, approve, asks, commands, config, deploy, init, queue, rollback, verify, version
+from zeus import alert, approve, asks, commands, config, deploy, init, queue, rollback, staged, verify, version
 
 DESCRIPTION = ("Zeus deploys a commit only after the owner approved it, and can put the previous approved commit back. "
                "He never fetches from anywhere but the allowlisted repositories, never deploys a branch, never runs a "
@@ -53,6 +53,14 @@ def build_parser():
     p.add_argument("repo", help="owner/name, as in repos.json")
     p.add_argument("--file", metavar="FILE", help=argparse.SUPPRESS)
     p.set_defaults(func=commands.main_request)
+    p = sub.add_parser("stage-request", help="ask for the deploy of a pack staged on the server (kind staged-pack, "
+                                            "docs/design.md §15): zeus stage-request you/game --version 0.46.0 --sha <40 hex>")
+    p.add_argument("repo", help="game or you/game, a staged-pack repository in repos.json")
+    p.add_argument("--version", required=True, help="the version the pack and the commit carry, e.g. 0.46.0")
+    p.add_argument("--sha", required=True, help="the commit on main the pack was built from (40 hex)")
+    p.add_argument("--tests", help="one line for the card, as the session reported it (e.g. \"412 passed\"); shown as text")
+    p.add_argument("--file", metavar="FILE", help=argparse.SUPPRESS)
+    p.set_defaults(func=staged.main)
     p = sub.add_parser("decline", help="mark a waiting request declined, with a reason word; no Janus call, one signed line")
     p.add_argument("id")
     p.add_argument("--reason", required=True, metavar="WORD", help="one word, e.g. not-now")

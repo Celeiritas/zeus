@@ -26,7 +26,9 @@ URL_HTTPS = re.compile(r"^https://github\.com/(%s)/(%s)\.git$" % (NAME, NAME))
 URL_SSH = re.compile(r"^git@(%s):(%s)/(%s)\.git$" % (NAME, NAME, NAME))
 DEFAULTS = {"expire_hours": 72, "deploy_timeout_s": 900, "health_wait_s": 30}
 TOP_KEYS = ("version", "repos") + tuple(DEFAULTS)
-REPO_KEYS = ("url", "path", "key", "private", "health", "services", "rules")
+REPO_KEYS = ("url", "path", "key", "private", "health", "services", "rules", "kind", "staging", "install")
+GIT, STAGED = "git", "staged-pack"            # kind: a clone and its scripts/deploy.sh, or a staged pack (design §15)
+KINDS = (GIT, STAGED)
 # Settings a config must never carry: each would let a file, not the code, choose what Zeus runs.
 FORBIDDEN = {
     "branch": "Zeus deploys %s only; the branch is fixed in code." % BRANCH,
@@ -108,17 +110,29 @@ class Repo:
         self.health = raw.get("health") if isinstance(raw.get("health"), dict) else {}
         self.services = list(raw.get("services") or []) if isinstance(raw.get("services"), list) else []
         self.rules = list(raw.get("rules") or []) if isinstance(raw.get("rules"), list) else []
+        self.kind = raw.get("kind") if raw.get("kind") in KINDS else GIT
+        self.staging = Path(os.path.expanduser(raw["staging"])) if isinstance(raw.get("staging"), str) else None
+        self.install = Path(os.path.expanduser(raw["install"])) if isinstance(raw.get("install"), str) else None
 
     @property
     def ssh(self):
         return isinstance(self.url, str) and self.url.startswith("git@")
 
+    @property
+    def staged(self):
+        return self.kind == STAGED
+
     def sentence(self):
         """One plain sentence: what Zeus would deploy for this repository, and how he checks it came up."""
-        s = "%s: %s of %s into %s" % (self.key, BRANCH, self.url, short(self.path) if self.path else "?")
+        if self.staged:
+            s = "%s: a pack staged in %s for a commit on %s of %s" % (
+                self.key, short(self.staging) if self.staging else "?", BRANCH, self.url)
+        else:
+            s = "%s: %s of %s into %s" % (self.key, BRANCH, self.url, short(self.path) if self.path else "?")
         if self.private:
             s += " (private, key %s)" % (short(self.deploy_key) if self.deploy_key else "missing")
-        s += ", then %s" % DEPLOY_SCRIPT
+        s += ", then %s" % ("bash %s install" % (short(self.install) if self.install else "?") if self.staged
+                            else DEPLOY_SCRIPT)
         if "http" in self.health:
             s += "; healthy when GET %s answers 200" % self.health["http"]
         elif "service" in self.health:
@@ -236,7 +250,18 @@ def _check_repo(cfg, key, raw, paths):
             "not %s. Zeus fetches from GitHub only." % (key, url))
 
     path = raw.get("path")
-    if not isinstance(path, str) or not path.strip():
+    kind = raw.get("kind", GIT)
+    if kind not in KINDS:
+        err('repos.%s: "kind" must be "%s" (a clone and its %s, the default) or "%s" (a pack staged on the server, '
+            'design §15), not %r.' % (key, GIT, DEPLOY_SCRIPT, STAGED, kind))
+        return
+    for field in ("staging", "install"):
+        if field in raw and kind != STAGED:
+            err('repos.%s: "%s" is only for "kind": "%s"; a git repository runs %s of the approved commit.'
+                % (key, field, STAGED, DEPLOY_SCRIPT))
+    if kind == STAGED:
+        _check_staged(cfg, key, raw, r)          # no clone: no path, a staging folder and an install script instead
+    elif not isinstance(path, str) or not path.strip():
         err('repos.%s: "path" is missing. Give the folder of the clone on the server, e.g. ~/src/%s.' % (key, m.group(2)))
     elif not (path.startswith(("/", "~/")) or path == "~" or r.path.is_absolute()):   # the server is Linux; a PC may check
         err('repos.%s: "path" %s must be an absolute path or start with ~ (Zeus makes the clone there on the first '
@@ -279,6 +304,88 @@ def _check_repo(cfg, key, raw, paths):
         elif field == "rules" and any(i.startswith("/") or ".." in i.split("/") for i in items):
             err('repos.%s: "rules" are paths inside the repository (no leading / and no ..), not %r.' % (key, items))
     cfg.repos[key] = r
+
+
+def _absolute(text):
+    return isinstance(text, str) and (text.startswith(("/", "~/")) or Path(os.path.expanduser(text)).is_absolute())
+
+
+def _check_staged(cfg, key, raw, r):
+    """kind staged-pack (design §15.1): no clone, a fixed staging folder and a fixed install script."""
+    err, warn = cfg.errors.append, cfg.warnings.append
+    if "path" in raw:
+        err('repos.%s: "path" is for a clone; a staged-pack repository has none (Zeus fetches %s into his mirror to '
+            "check the commit). Remove it." % (key, BRANCH))
+    staging, install = raw.get("staging"), raw.get("install")
+    if not _absolute(staging):
+        err('repos.%s: "staging" must be the absolute folder where packs are staged (or start with ~/), e.g. '
+            "~/.config/argus-ui/.staged-%s, not %r." % (key, key.split("/")[-1], staging))
+    else:
+        for why in staging_problems(r.staging):
+            (warn if why.startswith("does not exist") else err)("repos.%s: staging folder %s %s" % (key, short(r.staging), why))
+    if not _absolute(install):
+        err('repos.%s: "install" must be the absolute path of the fixed install script (or start with ~/), e.g. '
+            "~/.config/zeus/install/%s.sh, not %r." % (key, key.split("/")[-1], install))
+    else:
+        for why in install_problems(r.install, r.staging):
+            (warn if why.startswith("does not exist") else err)("repos.%s: install script %s %s" % (key, short(r.install), why))
+
+
+def _owner_mode(st, what):
+    """POSIX only: owned by this user, not writable by group or others. Empty on Windows, where modes mean nothing."""
+    if os.name == "nt":
+        return []
+    out = []
+    if st.st_uid != os.getuid():
+        out.append("is owned by another user (uid %d); it must be Zeus's own user's" % st.st_uid)
+    if stat.S_IMODE(st.st_mode) & 0o022:
+        out.append("is writable by group or others, who could change it; chmod go-w %s" % what)
+    return out
+
+
+def staging_problems(folder):
+    """Why Zeus would not read packs from this folder (design §15.1); empty when it is fine."""
+    if folder is None:
+        return ["is not set."]
+    try:
+        st = os.lstat(folder)
+    except FileNotFoundError:
+        return ["does not exist yet; make it before the first request (mkdir -p, chmod 700)."]
+    except OSError as e:
+        return ["cannot be read (%s)." % e.strerror]
+    if stat.S_ISLNK(st.st_mode):
+        return ["is a symbolic link; name the folder itself."]
+    if not stat.S_ISDIR(st.st_mode):
+        return ["is not a folder."]
+    return [w + "." for w in _owner_mode(st, short(folder))]
+
+
+def install_problems(script, staging=None):
+    """Why Zeus would not run this install script (design §15.1); empty when it is fine. Checked by check-config and
+    again before every run: a regular file, not a link, Zeus's user's own, neither it nor its folder writable by group
+    or others, and not inside the staging folder."""
+    if script is None:
+        return ["is not set."]
+    try:
+        st = os.lstat(script)
+    except FileNotFoundError:
+        return ["does not exist yet; copy examples/install-pack.sh.example there before the first deploy."]
+    except OSError as e:
+        return ["cannot be read (%s)." % e.strerror]
+    if stat.S_ISLNK(st.st_mode):
+        return ["is a symbolic link; name the file itself."]
+    if not stat.S_ISREG(st.st_mode):
+        return ["is not a regular file."]
+    out = [w + "." for w in _owner_mode(st, short(script))]
+    try:
+        out += ["has a folder that " + w + "." for w in _owner_mode(os.stat(script.parent), short(script.parent))]
+    except OSError:
+        pass
+    if staging is not None:
+        inside = os.path.realpath(script).startswith(os.path.realpath(staging).rstrip(os.sep) + os.sep)
+        if inside:
+            out.append("is inside the staging folder, where sessions write; keep it outside (e.g. ~/.config/zeus/install/).")
+    return out
 
 
 def _check_health(cfg, key, health):
