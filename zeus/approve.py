@@ -107,10 +107,12 @@ def by_words(by):
     """Who approved, for the line Zeus prints (issue #27): "by <login>", the login the signed line carries. Over ssh
     that is the one Janus read from whois, since nobody types a name there. When Janus allowed it without naming a login,
     say what he did check (the device, else the address) and that no login was named: never Python's None, which reads
-    as if nobody approved, and never the shell's user, which is the server's account and not who Janus verified."""
-    if by.get("user"):
-        return "by %s" % by["user"]
-    return "from %s (Janus named no login)" % (by.get("node") or by.get("ip") or "an unknown address")
+    as if nobody approved, and never the shell's user, which is the server's account and not who Janus verified. A name
+    that is empty or only spaces counts as no name (it would print as a blank)."""
+    name = lambda key: by[key].strip() if isinstance(by.get(key), str) else ""
+    if name("user"):
+        return "by %s" % name("user")
+    return "from %s (Janus named no login)" % (name("node") or name("ip") or "an unknown address")
 
 
 def approve(store, cfg, rid, sha, user, ip, now=None, via="elaia", out=None, confirm=None):

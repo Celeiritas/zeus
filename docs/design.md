@@ -102,7 +102,7 @@ Hermes's `hermes-github` writes `<repo>-<sha7>.json` into `~/.local/share/zeus/r
 
 **From ssh (fallback, and the new manual line).** `ssh {{SSH}} 'zeus approve <id>'` or `ssh {{SSH}} 'zeus deploy argus-ui'` (= `request` for current `main` + `approve`, one line). Identity: `SSH_CONNECTION` gives the client address; Zeus passes `via: ssh` and the address, Janus does the same whois check (the node must be in `approvers.zeus.nodes`). No `--user` flag is accepted from the shell: Janus takes the user from whois. The shell asks "Deploy argus-ui 4.9.0? type yes" instead of a hold.
 
-**The line Zeus prints after a yes** names who approved, as the signed line has it: `<id>: approved (you/argus-ui 4.9.0) by <login>; deploying as zeus-deploy-<id>`. Over ssh that login is the one Janus read from whois (nobody types a name there). If Janus allowed the approval without naming a login, the line says what he did check and that the name is missing: `… from <device> (Janus named no login); …`, or the client address when he named no device either. Zeus never prints the shell's user in that place: it is the server's account, not who Janus verified, and the screen must agree with the signed line, whose `by.user` is null in that case. A rollback's line follows the same rule (0.6.1).
+**The line Zeus prints after a yes** names who approved, as the signed line has it: `<id>: approved (you/argus-ui 4.9.0) by <login>; deploying as zeus-deploy-<id>`. Over ssh that login is the one Janus read from whois (nobody types a name there). If Janus allowed the approval without naming a login, the line says what he did check and that the name is missing: `… from <device> (Janus named no login); …`, or the client address when he named no device either. Zeus never prints the shell's user in that place: it is the server's account, not who Janus verified, and the screen must agree with the signed line, whose `by.user` is null in that case. A rollback's line follows the same rule: it already named the signed login, and since 0.6.1 it has the same no-login wording. A login or device name that is empty or only spaces counts as none.
 
 **Decline:** `POST api/throne/decline { id, reason }` / `zeus decline <id> --reason <word>`: state `declined`, logged, no Janus call (declining changes nothing).
 
@@ -146,7 +146,7 @@ A failed request is never retried on its own. Re-check makes a new request for t
 | `git pull` inside `deploy.sh` | `deploy.sh --no-pull` (argus-ui 4.9.1). Run without the flag it still pulls, for the bootstrap and for repos without Zeus. The clone is detached from then on, so a hand-run `git pull` there fails on purpose: the clone is Zeus's |
 
 ## 9. Zeus · Throne (Elaia plugin `throne`)
-A `server` plugin shipped in `plugin/`, installed to `~/.config/argus-ui/plugins/throne/`, pill "Zeus · Throne", URL `<base>/throne` (`/zeus` is Zeus's task page in Watch; persona keys are reserved ids). Colour: storm gold `#E0B341` on Night. Zeus's bolt medallion is drawn by the page already. Argus small in the corner, glaring while `alerts/zeus.json` exists.
+A `server` plugin shipped in `plugin/`, installed to `~/.config/argus-ui/plugins/throne/`, pill "Throne" with the subtitle "Zeus · deploys" (`name` and `subtitle` in `plugin/plugin.json`), URL `<base>/throne` (`/zeus` is Zeus's task page in Watch; persona keys are reserved ids). Colour: storm gold `#E0B341` on Night. Zeus's bolt medallion is drawn by the page already. Argus small in the corner, glaring while `alerts/zeus.json` exists.
 
 **Page, laid out for a phone first (375 px), list pattern:**
 0. **Needs your answer** (since 0.5.0, §14): the questions sessions asked the owner, above everything that waits for a yes.
@@ -171,10 +171,10 @@ A `server` plugin shipped in `plugin/`, installed to `~/.config/argus-ui/plugins
 - The tablet, throne and stage-node art waits for the owner's approval (argus-ui `docs/ui-plan.md` §13); until then the page uses plain cards and chips.
 - Tests: `tests/test_throne_plugin.py` (reads, stages, Home's status, the exact `zeus` arguments, refusals) and `tests/throne/throne.test.js` in a browser under Elaia against `tests/throne/fake_zeus.py` (`bash tests/throne/run.sh <argus-ui checkout>`; the `throne-page` CI job).
 
-**Where the page still differs from the text above** (checked against the code at 0.6.1; issue #11 stays open for the first point):
+**As built: where the page still differs from the text above** (checked against the code at 0.6.1; issue #11 stays open for the first point):
 - **No inline diff of rules files.** The badge names the files; nothing shows what changed in them.
 - **The hold's name for a screen reader** is the button's `aria-label`, "Deploy argus-ui 4.9.0 (hold 3 seconds to confirm)", set by Elaia's `holdConfirm`; there is no separate "Hold for three seconds to deploy …" description. While the POST runs the label reads "Working…", not "Deploying".
-- **The pill** reads "Throne" with the small line "Zeus · deploys" (`name` and `subtitle` in `plugin/plugin.json`), not "Zeus · Throne".
+- **The approve button** is labelled with what it deploys, "Deploy argus-ui 4.9.0", not "Approve & deploy" (`plugin/page.js`).
 - **History** is the newest 60 finished records (`HISTORY` in `plugin/plugin.py`); older ones stay in `queue/.done/` and are not shown. A log opens with its last 80 lines.
 - **Two live regions, not one:** the status line is a `role="status"` paragraph, and stage changes are announced by a second, visually hidden `aria-live="polite"` line.
 - **Deployed now** names who approved only when the approval carries a login ("by <login> · <device> (<via>)"); an approval Janus allowed without naming a login shows no name there, while the command line says "from <device> (Janus named no login)" (§4).
@@ -221,8 +221,7 @@ CLAUDE.md, README.md, VERSION, CHANGELOG.md, LICENSE
 | private config repo | `zeus/repos.json`, `scripts/deploy.sh`, `mnemosyne-journal` job + write key, branch protection if the plan allows | the owner |
 
 ## 13. Build order
-Where it stands (2026-11-09, version 0.6.1): 0.1 to 0.6 are built and merged, and 0.6.0 is the release installed on `{{SERVER}}` (0.6.1 corrects one printed line and these notes). "Built" below means built in code and covered by the tests; what the owner has used on the server is the 1.0 row.
-- **In use on `{{SERVER}}`:** argus-ui is deployed through Zeus; the recent deploys were approved over ssh. The other allowlisted repositories have not been deployed through him yet, and no repository of kind `staged-pack` is in the allowlist there.
+Where it stands (2026-11-09, version 0.6.1): 0.1 to 0.6 are built and merged (0.6.1 changes two printed lines and these notes). "Built" below means built in code and covered by the tests. This section does not record which release a server runs (`zeus --version` there says); what the owner has done on the server is the 1.0 row.
 - **Not built:** `approve-release` (#12; the command is a stub that says so, and there is no Release button); the inline diff of rules files on the Throne (§9, "As built"); tiers 1 and 2 of §14 (a proposal the owner has not confirmed) and the power actions of 0.7 that wait on them.
 - **Built differently from the text above:** the Throne; §9's "As built" lists say where the page differs from the rest of §9.
 
@@ -235,7 +234,7 @@ Where it stands (2026-11-09, version 0.6.1): 0.1 to 0.6 are built and merged, an
 | 0.5 "the inbox" | §14 tiers (proposed) · the decision inbox: `ask` / `answer` / `asks`, Needs your answer on the Throne, `api/throne/summary` | nothing new | the decision inbox is built (0.5.0); tiers 1 and 2 are still a proposal |
 | 0.6 "the staged pack" | staged-pack deploys for a repository whose build needs files only `{{PC}}` has: §15, `zeus stage-request`, kind `staged-pack`, the fixed install script, the Throne's pack card | §14 | built (0.6.0) |
 | 0.7 | power actions as tier 2 (`zeus power gamemode\|desktop\|reboot`) | §14 tier 2 confirmed | planned |
-| 1.0 | #13 bootstrap on the server, config-repo `deploy.sh`, first approved deploy of argus-ui, retire the manual line | all above; the journal job | partly: Zeus 0.6.0 is installed on the server and argus-ui is deployed through him (the recent approvals came over ssh); #13 stays open until its two "Done means" boxes are ticked; the journal job is Mnemosyne's |
+| 1.0 | #13 bootstrap on the server, config-repo `deploy.sh`, first approved deploy of argus-ui, retire the manual line | all above; the journal job | partly: Zeus is installed on the server and argus-ui has been deployed through him with approvals over ssh (seen 2026-11-09); #13 stays open until its two "Done means" boxes are ticked; the journal job is Mnemosyne's |
 
 ## 14. Tiers
 **Status: proposed 2026-11-09, the owner to confirm the second tap for tier 1.** Tier 3 (decisions) is built in 0.5.0 because it changes nothing Zeus runs; tier 0 is today's behaviour, unchanged; tiers 1 and 2 change nothing until the owner confirms them.
@@ -292,7 +291,7 @@ Exit codes: 0 done · 1 refused (unknown, not open, already answered, expired, c
 `asks` = open asks, `deploys` = requests waiting for a yes (`pending`), `needs_you` = both. Home's own `api/throne/status` counts asks too: "Answer 1 question", "Answer 2, review 1", or the deploy wording as before.
 
 ## 15. Staged packs
-**Status: built in 0.6.0** (designed 2026-11-09 from the game session's request of 2026-11-04, merged the same day). Not used on `{{SERVER}}` yet: no repository of kind `staged-pack` is in the allowlist there. It changes nothing for the repositories of §2: they keep `kind` `git` (the default) and everything above.
+**Status: built in 0.6.0** (designed 2026-11-09 from the game session's request of 2026-11-04, merged the same day). Nothing uses it until the owner gives a repository `kind` `staged-pack` in `repos.json`. It changes nothing for the repositories of §2: they keep `kind` `git` (the default) and everything above.
 
 **Why.** Some repositories cannot be built on `{{SERVER}}` from git. A game's build needs models, sounds and art that live only on `{{PC}}` (outside git, by the owner's rule), and its repository is private with no build tools on the server. Until now its deploy was a line the owner ran on `{{PC}}`. The owner wants to approve it on the Throne instead, from `{{PHONE}}`, while still never letting Zeus run a command from a message. So the session on `{{PC}}` builds and **stages an immutable pack** on the server, then asks; Zeus checks the pack and the commit **himself**, at the request, at the hold and again before the install; the owner's 3-second hold is the yes; Zeus runs **one fixed install script** on **his own copy** of the pack; a rollback puts back the **previous set-aside copy**. Zeus builds nothing and never deploys a pack that is not from a request.
 

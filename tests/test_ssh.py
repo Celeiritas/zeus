@@ -119,6 +119,16 @@ class SshTest(ApproveBase):
         self.assertEqual(approve.by_words({"user": None, "ip": None, "via": "ssh"}),
                          "from an unknown address (Janus named no login)")
 
+    def test_a_name_of_only_spaces_counts_as_no_name(self):
+        """A login or device name made only of spaces would print as a blank ("by    ; deploying as"): it counts as no
+        name, like the empty one, and a real name is printed without the spaces around it."""
+        by = {"user": "   ", "ip": PHONE_IP, "via": "ssh", "node": "phone"}
+        self.assertEqual(approve.by_words(by), "from phone (Janus named no login)")
+        self.assertEqual(approve.by_words(dict(by, node="  ")), "from %s (Janus named no login)" % PHONE_IP)
+        self.assertEqual(approve.by_words(dict(by, node="  ", ip="  ")),
+                         "from an unknown address (Janus named no login)")
+        self.assertEqual(approve.by_words(dict(by, user=" %s " % OWNER)), "by " + OWNER)
+
     def test_refused_from_another_node(self):
         sha, rec = self.pending()
         self.assertEqual(self.approve_ssh(rec["id"], ip=OTHER_IP), 1)
