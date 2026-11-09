@@ -139,7 +139,7 @@ class CommandsTest(unittest.TestCase):
 
     def test_decline_from_a_shell_records_the_shell_user(self):
         sha, rec = self.pending_one()
-        commands.decline(self.store, rec["id"], "typo", out=self.out.append)
+        commands.decline(self.store, rec["id"], "typo", now=NOW + timedelta(minutes=2), out=self.out.append)
         by = log.entries(self.store)[0][2]["by"]
         self.assertEqual(by["via"], "ssh")
         self.assertTrue(by["user"])
@@ -149,13 +149,13 @@ class CommandsTest(unittest.TestCase):
         sha, rec = self.pending_one()
         with mock.patch.object(queue, "git", lambda args, **kw: self.fail("git was called")), \
              mock.patch.object(subprocess, "run", lambda *a, **kw: self.fail("a subprocess was started")):
-            self.assertEqual(commands.decline(self.store, rec["id"], "no", out=self.out.append), 0)
+            self.assertEqual(commands.decline(self.store, rec["id"], "no", now=NOW + timedelta(minutes=2), out=self.out.append), 0)
 
     def test_decline_a_record_that_is_not_pending_is_refused(self):
         sha, rec = self.pending_one()
-        commands.decline(self.store, rec["id"], "first", out=self.out.append)
+        commands.decline(self.store, rec["id"], "first", now=NOW + timedelta(minutes=2), out=self.out.append)
         self.out = []
-        self.assertEqual(commands.decline(self.store, rec["id"], "again", out=self.out.append), 1)
+        self.assertEqual(commands.decline(self.store, rec["id"], "again", now=NOW + timedelta(minutes=3), out=self.out.append), 1)
         self.assertEqual(self.out, ["zeus decline: %s is declined, not pending; only a waiting request can be declined."
                                     % rec["id"]])
         self.assertEqual(len(log.entries(self.store)), 1, "no second line")
@@ -178,7 +178,7 @@ class CommandsTest(unittest.TestCase):
         sha, rec = self.pending_one()
         self.secret.unlink()
         self.out = []
-        self.assertEqual(commands.decline(self.store, rec["id"], "no", out=self.out.append), 1)
+        self.assertEqual(commands.decline(self.store, rec["id"], "no", now=NOW + timedelta(minutes=2), out=self.out.append), 1)
         self.assertIn("run `zeus init`", self.out[0])
         self.assertEqual(self.store.read(rec["id"])["state"], "pending")
 

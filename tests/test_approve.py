@@ -144,7 +144,7 @@ class ApproveTest(ApproveBase):
 
     def test_declined_and_unknown_are_refused(self):
         sha, rec = self.pending()
-        commands.decline(self.store, rec["id"], "no")
+        commands.decline(self.store, rec["id"], "no", now=NOW + timedelta(minutes=2))
         self.assertEqual(self.approve(rec["id"], sha), 1)
         self.assertIn("is declined, not pending", self.out[0])
         self.assertEqual(self.approve("nope", sha), 1)
@@ -168,7 +168,7 @@ class ApproveTest(ApproveBase):
 
     def test_a_repo_missing_from_config_and_a_failed_fetch(self):
         sha, rec = self.pending()
-        self.assertEqual(approve.approve(self.store, None, rec["id"], sha, USER, IP, out=self.out.append), 1)
+        self.assertEqual(approve.approve(self.store, None, rec["id"], sha, USER, IP, now=NOW + timedelta(minutes=3), out=self.out.append), 1)
         self.assertIn("not in repos.json; nothing was fetched", self.out[0])
         self.cfg.repos["you/app"].url = str(Path(self.tmp.name) / "gone.git")
         self.assertEqual(self.approve(rec["id"], sha), 1)
