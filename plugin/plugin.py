@@ -1,7 +1,9 @@
 """Zeus · Throne, the Elaia server plugin `throne` (docs/design.md §9, docs/contract.md).
 
 Reads are file reads under Zeus's data folder (queue/, queue/.done/, state/, log/) and change nothing: a waiting
-request past its expiry is shown as expired, and Zeus marks it so himself when he next reads the queue. Every write
+request past its expiry is shown as expired, and Zeus marks it so himself when he next reads the queue. The decision
+inbox (queue/ask-*.json, docs/design.md §14) is read the same way: open asks under "Needs your answer", and a tap on an
+option runs `zeus answer <id> --index <n>`. Every write
 runs the zeus command with fixed arguments and returns what Zeus said; Zeus (and Janus behind him) decides. The plugin
 never decides, never writes a file and never runs a shell.
 """
@@ -14,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ID = re.compile(r"^\d{8}-\d{6}-[A-Za-z0-9._-]{1,100}$")
+ASK_ID = re.compile(r"^ask-\d{8}-\d{6}-[a-z0-9][a-z0-9-]{0,39}(-\d{1,3})?$")   # zeus/asks.py ID
 SHA = re.compile(r"^[0-9a-f]{40}$")
 WORD = re.compile(r"^[a-z][a-z-]{0,23}$")
 REPO = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")   # owner/name: never "..", never a flag
@@ -24,6 +27,7 @@ STAGES = ("fetch", "checkout", "build", "install", "health")
 MARKS = (("fetch", "zeus: "), ("checkout", "checked out "), ("build", "running scripts/deploy.sh"),
          ("install", "ZEUS_STAGE=install"), ("health", "health: "))
 HISTORY = 60          # rows the page gets; everything stays in queue/.done/
+ASKED = 10            # answered and expired asks the page gets; every record stays in queue/
 TAIL = 80             # log lines the page gets
 
 
@@ -52,6 +56,8 @@ def _records(folder, limit=None):
         return []
     out = []
     for p in paths:
+        if p.name.startswith("ask-"):       # the decision inbox's records share queue/; asks() reads them
+            continue
         rec = _read(p)
         if rec and isinstance(rec.get("id"), str):
             out.append(rec)
@@ -130,6 +136,38 @@ def alert():
     return {"level": a.get("level"), "message": str(a.get("message") or "")[:300], "since": a.get("since")} if a else None
 
 
+def _ask(rec):
+    """Only the fields the page shows, as text: an ask record is data from a session, never markup or a command."""
+    a = rec.get("answer") if isinstance(rec.get("answer"), dict) else None
+    opts = rec.get("options") if isinstance(rec.get("options"), list) else []
+    return {"id": rec["id"], "state": str(rec.get("state") or ""), "project": str(rec.get("project") or ""),
+            "title": str(rec.get("title") or ""), "context": str(rec.get("context") or ""),
+            "options": [str(o) for o in opts][:8], "asked": rec.get("asked"), "expires": rec.get("expires"),
+            "answer": {"option": str(a.get("option") or ""), "at": a.get("at"),
+                       "by": a.get("by") if isinstance(a.get("by"), dict) else {}} if a else None}
+
+
+def asks(now=None):
+    """(open, finished): open asks oldest-asked first (the one waiting longest on top), and the last answered or expired
+    ones newest first. An open ask past its expiry is shown as expired; Zeus records that himself."""
+    now = now or datetime.now(timezone.utc).astimezone()
+    try:
+        paths = sorted((data() / "queue").glob("ask-*.json"), reverse=True)
+    except OSError:
+        return [], []
+    opened, done = [], []
+    for p in paths:
+        rec = _read(p)
+        if not rec or rec.get("id") != p.stem or not ASK_ID.match(p.stem):
+            continue
+        r = _ask(rec)
+        exp = _when(r["expires"])
+        if r["state"] == "open" and exp and exp <= now:
+            r["state"] = "expired"
+        (opened if r["state"] == "open" else done).append(r)
+    return opened[::-1], done[:ASKED]
+
+
 def snapshot(now=None):
     """Everything the page shows, from files only. Nothing is written."""
     now = now or datetime.now(timezone.utc).astimezone()
@@ -151,13 +189,16 @@ def snapshot(now=None):
             deploying.append(dict(rec, stages=stages(rec, lines), tail=lines))
     history = expired + [dict(r, has_log=log_path(r["id"]).is_file()) for r in done if r.get("state") not in RUNNING]
     live = deployed_now()
-    return {"at": now.isoformat(timespec="seconds"), "line": status_line(waiting, live),
+    opened, asked = asks(now)
+    return {"at": now.isoformat(timespec="seconds"), "line": status_line(waiting, live, opened),
+            "asks": opened, "asked": asked,
             "waiting": waiting, "deploying": deploying, "deployed": live, "history": history[:HISTORY], "alert": alert()}
 
 
-def status_line(waiting, live):
-    n = len(waiting)
-    parts = ["%d deploy%s waiting" % (n, "" if n == 1 else "s") if n else "Nothing waiting"]
+def status_line(waiting, live, opened=()):
+    n, q = len(waiting), len(opened)
+    parts = ["%d question%s for you" % (q, "" if q == 1 else "s")] if q else []
+    parts.append("%d deploy%s waiting" % (n, "" if n == 1 else "s") if n else "Nothing waiting" if not q else "no deploys waiting")
     for d in live:
         if d["deployed"]:
             parts.append("%s %s live" % (d["repo"].split("/")[-1], d["deployed"].get("version") or str(d["deployed"].get("sha") or "")[:7]))
@@ -165,14 +206,28 @@ def status_line(waiting, live):
 
 
 def home_status():
-    """Elaia's Home (status v2): the line, and "needs you" with a verb-first button while something waits."""
+    """Elaia's Home (status v2): the line, and "needs you" with a verb-first button while something waits. Open asks
+    count too: a question waiting for an answer needs the owner as much as a deploy waiting for a yes."""
     s = snapshot()
     w = [r for r in s["waiting"] if r.get("state") == "pending"]
-    if len(w) == 1:
+    q = len(s["asks"])
+    if q and w:
+        action = "Answer %d, review %d" % (q, len(w))
+    elif q:
+        action = "Answer %d question%s" % (q, "" if q == 1 else "s")
+    elif len(w) == 1:
         action = "Review %s %s" % (str(w[0].get("repo") or "").split("/")[-1], w[0].get("version") or "")
     else:
         action = "Review %d deploys" % len(w)
-    return {"line": s["line"], "needs": bool(w), "action": action.strip()[:32] if w else "", "count": len(w)}
+    n = len(w) + q
+    return {"line": s["line"], "needs": bool(n), "action": action.strip()[:32] if n else "", "count": n}
+
+
+def summary():
+    """GET api/throne/summary: the counts Elaia's Home (or any page) can show without reading the whole Throne."""
+    s = snapshot()
+    deploys = len([r for r in s["waiting"] if r.get("state") == "pending"])
+    return {"asks": len(s["asks"]), "deploys": deploys, "needs_you": len(s["asks"]) + deploys, "line": s["line"]}
 
 
 # ---- Elaia's entry points --------------------------------------------------------------------------------------------
@@ -181,6 +236,8 @@ def get(path, query, ctx):
         return 200, snapshot()
     if path == "status":
         return 200, home_status()
+    if path == "summary":
+        return 200, summary()
     if path == "log":
         rid = (query.get("id") or [""])[0]
         if not ID.match(rid):
@@ -233,6 +290,14 @@ def post(path, body, ctx):
         args = ["request", repo]
     elif path == "seen":
         args = ["seen"]
+    elif path == "answer":
+        aid, index = str(body.get("id", "")), body.get("index")
+        if not (ASK_ID.match(aid) and type(index) is int and 1 <= index <= 8):
+            return 400, {"ok": False, "msg": "bad ask id or option"}
+        who = _who(ctx)
+        if "--user" not in who:     # the recorded login is the only record of who decided: no Janus is behind an answer
+            return 403, {"ok": False, "msg": "no tailnet login on this request; open the Throne through tailscale serve"}
+        args = ["answer", aid, "--index", str(index)] + who
     else:
         return 404, {"ok": False, "msg": "not found"}
     code, said = run(args)

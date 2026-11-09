@@ -1,7 +1,9 @@
 """zeus verify-log (docs/design.md §4, docs/contract.md §4; issue #7): re-check the HMAC of every line in the
 approvals logs, Zeus's own (~/.local/share/zeus/log/) or the journal copy in the private config repo. A line whose
 signature no longer matches was changed after Zeus wrote it, or was not written with this key. The check proves the
-line is unchanged since signing; it does not prove who approved (that was Janus's check at the time)."""
+line is unchanged since signing; it does not prove who approved (that was Janus's check at the time).
+The decision inbox's records (queue/ask-*.json, zeus/asks.py) carry the same kind of signature over the whole record;
+verify-log checks them too: by default the ones in Zeus's queue/, or one record or a folder of them given as the path."""
 import json
 import os
 import sys
@@ -13,13 +15,28 @@ BAD_EXIT = 10
 
 
 def files(target):
-    """The approvals-*.jsonl files to check: one file, or every one in a folder (oldest month first)."""
+    """The files to check: one file, or every approvals-*.jsonl (oldest month first) and ask-*.json in a folder."""
     target = Path(os.path.expanduser(str(target)))
     if target.is_file():
         return [target]
     if target.is_dir():
-        return sorted(target.glob("approvals-*.jsonl"))
+        return sorted(target.glob("approvals-*.jsonl")) + sorted(target.glob("ask-*.json"))
     return None
+
+
+def _record(p, text, key):
+    """One signed record (an ask): a single JSON object, the whole file, checked as one row."""
+    try:
+        rec = json.loads(text)
+    except ValueError:
+        return (p, 1, "bad", "not JSON")
+    if not isinstance(rec, dict):
+        return (p, 1, "bad", "not a JSON object")
+    if not isinstance(rec.get("sig"), str):
+        return (p, 1, "bad", "no sig")
+    if not log.check(rec, key):
+        return (p, 1, "bad", "sig does not match: the record was changed outside Zeus, or signed with another key")
+    return (p, 1, "ok", "ask %s %s" % (rec.get("id", "?"), rec.get("state", "?")))
 
 
 def verify(paths, key):
@@ -30,6 +47,9 @@ def verify(paths, key):
             text = p.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as e:
             rows.append((p, 0, "bad", "cannot read the file (%s)" % (getattr(e, "strerror", None) or e)))
+            continue
+        if p.suffix == ".json":
+            rows.append(_record(p, text, key))
             continue
         for n, line in enumerate(text.splitlines(), 1):
             if not line.strip():
@@ -55,6 +75,8 @@ def verify(paths, key):
 def main(args):
     target = args.path or (queue.Store().data / "log")
     paths = files(target)
+    if paths is not None and not args.path:          # the default also checks the open and answered asks in queue/
+        paths += sorted(queue.Store().queue.glob("ask-*.json"))
     if paths is None:
         print("zeus verify-log: %s is neither a file nor a folder." % target, file=sys.stderr)
         return 1

@@ -26,7 +26,7 @@ Placeholders follow argus-ui's rule: `{{SERVER}}` (the always-on box that runs E
 - **One job: run what the owner approved.** Zeus turns an approved request into a checkout of exactly that commit and a run of that repo's `scripts/deploy.sh`, records the result, and can put the previous approved commit back.
 - **He never fetches from anywhere but the allowlisted repos**, never runs a command from a message, a page or a config, never deploys a branch, never touches a file Hermes carried, never pushes anywhere. The only code Zeus runs that he didn't ship with is `scripts/deploy.sh` of a commit the owner merged and then approved.
 - **Nothing of Zeus runs while idle.**
-- **Python 3 standard library only**, one zipapp at `~/.local/bin/zeus` (like Hermes and Janus). Calls `git`, `janus`, `hermes`, `systemd-run`, `systemctl --user`, `tailscale`. Subcommands: `queue` (process `requests/`), `request`, `approve`, `approve-release`, `decline`, `deploy-run` (internal, under `systemd-run`), `rollback`, `status`, `check-config`, `init`, `verify-log`.
+- **Python 3 standard library only**, one zipapp at `~/.local/bin/zeus` (like Hermes and Janus). Calls `git`, `janus`, `hermes`, `systemd-run`, `systemctl --user`, `tailscale`. Subcommands: `queue` (process `requests/`), `request`, `approve`, `approve-release`, `decline`, `deploy-run` (internal, under `systemd-run`), `rollback`, `status`, `check-config`, `init`, `verify-log`, `seen`, and since 0.5.0 the decision inbox: `ask`, `answer`, `asks` (§14).
 
 ## 2. `~/.config/zeus/repos.json` – the allowlist
 The owner's copy lives in the private config repo (`zeus/repos.json`), copied (not symlinked) into `~/.config/zeus/` by that repo's deploy. This repo ships `examples/repos.example.json` with placeholders; the loader expands `~` and `{{PLACEHOLDERS}}` from `~/.config/leafy/realm.json`.
@@ -145,6 +145,7 @@ A failed request is never retried on its own. Re-check makes a new request for t
 A `server` plugin shipped in `plugin/`, installed to `~/.config/argus-ui/plugins/throne/`, pill "Zeus · Throne", URL `<base>/throne` (`/zeus` is Zeus's task page in Watch; persona keys are reserved ids). Colour: storm gold `#E0B341` on Night. Zeus's bolt medallion is drawn by the page already. Argus small in the corner, glaring while `alerts/zeus.json` exists.
 
 **Page, laid out for a phone first (375 px), list pattern:**
+0. **Needs your answer** (since 0.5.0, §14): the questions sessions asked the owner, above everything that waits for a yes.
 1. **Status line:** "1 deploy waiting · argus-ui 4.8.0 live since Tue". Feeds Elaia's Home page through the plugin `status` endpoint.
 2. **Waiting** (the queue, newest first): one card per request: repo, version, sha7 (link to the commit), subject, changelog lines, checks chip (✓ passed · ✕ failed · – none), "12 files", the rules badge when it applies, expiry ("expires in 2 d"). Buttons: **Approve & deploy** (hold), **Decline** (asks for a reason word), **Re-check**.
 3. **Deploying:** the live log tail (`aria-live="polite"` for stage changes only, not every line), stage chips (fetch → checkout → build → install → health), Cancel is **not** offered (half a deploy is worse than a whole one; rollback is).
@@ -153,7 +154,7 @@ A `server` plugin shipped in `plugin/`, installed to `~/.config/argus-ui/plugins
 
 **Hold to confirm (Approve & deploy, Roll back, Release).** Press and hold for 3 s: a ring around the button fills while the label counts "Hold… 3 · 2 · 1"; letting go early cancels with nothing sent; at 3 s the POST goes and the label turns to "Deploying". Keyboard: hold <kbd>Space</kbd> or <kbd>Enter</kbd> on the focused button for the same 3 s (a key-repeat timer, cancelled on keyup). Reduced motion: no ring, the countdown words only. Screen readers: the button is described by "Hold for three seconds to deploy argus-ui 4.9.0", and the status line announces the result. Touch target ≥ 44 px; the hold never needs a path gesture, so WCAG 2.5.1 (pointer gestures) is met.
 
-**API:** `GET api/throne` and `api/throne/status` read `queue/`, `state/` and the logs directly (no subprocess on reads; `deploy-<id>.log` tail is a file read). POSTs pass Elaia's checks (same-origin, JSON, 4 KB): `approve`, `decline`, `rollback`, `recheck` (starts `hermes-github` then `zeus queue`), `seen`. Every POST that changes what runs calls Zeus, and Zeus calls Janus; the plugin itself never decides.
+**API:** `GET api/throne`, `api/throne/status` and (0.5.0) `api/throne/summary` read `queue/`, `state/` and the logs directly (no subprocess on reads; `deploy-<id>.log` tail is a file read). POSTs pass Elaia's checks (same-origin, JSON, 4 KB): `approve`, `decline`, `rollback`, `recheck` (starts `hermes-github` then `zeus queue`), `seen`, and (0.5.0) `answer { id, index }` → `zeus answer <id> --index <n> --user … --ip …`. Every POST that changes what runs calls Zeus, and Zeus calls Janus; the plugin itself never decides.
 
 **Accessibility (argus-ui `CLAUDE.md` + WCAG 2.1 AA):** keyboard path through every card and button with visible focus; no sideways scroll at 375 px, targets ≥ 44 px; state = icon + word, never colour alone; with reduced motion no lightning on approve (a static bolt icon and the word "Deploying"); one `aria-live` region on the status line.
 
@@ -200,13 +201,72 @@ CLAUDE.md, README.md, VERSION, CHANGELOG.md, LICENSE
 | private config repo | `zeus/repos.json`, `scripts/deploy.sh`, `mnemosyne-journal` job + write key, branch protection if the plan allows | the owner |
 
 ## 13. Build order
-| Version | Issues (one branch, one PR each) | Needs |
-|---|---|---|
-| 0.1 "the queue" | #2 skeleton, config loader, `check-config`, `init`, zipapp build · #3 `zeus-queue`: record, on-main check, supersede, expiry · #4 `request` / `decline` / `status` CLI | Hermes message format (done) |
-| 0.2 "the yes" | #5 `approve` (freshness, Janus call, signed log) · #6 ssh approval path (`SSH_CONNECTION`, typed yes) · #7 `verify-log` | janus `verify-approval` |
-| 0.3 "the deploy" | #8 `deploy-run` under `systemd-run`: fetch, checkout, `--no-pull`, health · #9 hold vs auto-rollback, `rollback`, `state/` · #10 alert file | argus-ui 4.9.1 |
-| 0.4 "the throne" | #11 Throne plugin page (list, hold-to-confirm, live log, History with filters, a11y tests) · #12 `approve-release` + Delivery page button | argus-ui `server` plugin kind; hermes `release --approval` |
-| 1.0 | #13 bootstrap on the server, config-repo `deploy.sh`, first approved deploy of argus-ui, retire the manual line | all above; the journal job |
+Where it stands (2026-11-09): 0.1 to 0.4 are built (0.4.4 is the last release; Zeus runs on `{{SERVER}}`); 0.5.0 (the decision inbox) is built in this branch. Only `approve-release` (#12) is still a stub that says so.
+
+| Version | Issues (one branch, one PR each) | Needs | Status |
+|---|---|---|---|
+| 0.1 "the queue" | #2 skeleton, config loader, `check-config`, `init`, zipapp build · #3 `zeus-queue`: record, on-main check, supersede, expiry · #4 `request` / `decline` / `status` CLI | Hermes message format (done) | built |
+| 0.2 "the yes" | #5 `approve` (freshness, Janus call, signed log) · #6 ssh approval path (`SSH_CONNECTION`, typed yes) · #7 `verify-log` | janus `verify-approval` | built |
+| 0.3 "the deploy" | #8 `deploy-run` under `systemd-run`: fetch, checkout, `--no-pull`, health · #9 hold vs auto-rollback, `rollback`, `state/` · #10 alert file | argus-ui 4.9.1 | built |
+| 0.4 "the throne" | #11 Throne plugin page (list, hold-to-confirm, live log, History with filters, a11y tests) · #12 `approve-release` + Delivery page button | argus-ui `server` plugin kind; hermes `release --approval` | #11 built (0.4.0 to 0.4.4); #12 not built |
+| 0.5 "the inbox" | §14 tiers (proposed) · the decision inbox: `ask` / `answer` / `asks`, Needs your answer on the Throne, `api/throne/summary` | nothing new | built (0.5.0) |
+| 0.6 | staged-pack deploys for a repository whose build needs files only `{{PC}}` has (design first, as §15) | §14 | planned |
+| 0.7 | power actions as tier 2 (`zeus power gamemode\|desktop\|reboot`) | §14 tier 2 confirmed | planned |
+| 1.0 | #13 bootstrap on the server, config-repo `deploy.sh`, first approved deploy of argus-ui, retire the manual line | all above; the journal job | partly: Zeus is installed on the server (0.4.x); the journal job is Mnemosyne's |
+
+## 14. Tiers
+**Status: proposed 2026-11-09, Dax to confirm the second tap for tier 1.** Tier 3 (decisions) is built in 0.5.0 because it changes nothing Zeus runs; tier 0 is today's behaviour, unchanged; tiers 1 and 2 change nothing until the owner confirms them.
+
+Every request Zeus shows has a tier. The tier sets the gesture on the Throne, how long the request stays approvable, what Janus is asked, and it is written into the signed log line.
+
+| Tier | What | The gesture | Expiry | Janus (`verify-approval`) |
+|---|---|---|---|---|
+| **0 · review** | a deploy (or rollback) of an allowlisted repository's `main` commit that changes none of the realm's rules | the 3-second hold (§9, today) | 72 h (`expire_hours`) | `action: deploy` or `rollback`: the user and the node must be in `approvers.zeus` (today) |
+| **1 · rules** | a deploy whose diff touches a `rules` path of `repos.json` (the gold badge "Changes the realm's own rules": `CLAUDE.md`, Zeus/Janus/Hermes config, units) | the 3-second hold **plus a second tap, "I read the changed rules"**, which only appears after the rules files' names (later their diff) have been shown. Recommended over typing the repository name: typed confirmations are the owner's own, over ssh, and typing on a phone invites copy-paste | 24 h: rules deserve a fresh read | as tier 0, plus `"tier": 1`, so Janus can (later, optional) require a narrower list `approvers.zeus.rules`; absent, the same people as tier 0 |
+| **2 · power** | reboot, a session change (to game mode or to the desktop), anything that interrupts a game or stops services | the 3-second hold; **refused while a game runs** unless a second hold, "A game is running. Do it anyway?". It mirrors the reboot gate of the server's operations notes and never weakens it | 10 min: a power action is about now | `action: power`, `unit` from a fixed list in code; the user and node as tier 0 |
+| **3 · decisions** | a plain question with options, asked by a session, answered by the owner; **no side effect in Zeus** | one tap on an option (a choice, not a hold: nothing runs) | set by the asker, 10 min to 30 d, default 3 d | not asked: like Decline, an answer changes nothing that runs. The Throne passes who tapped (`tailscale serve`'s headers) and Zeus records it |
+
+**How a tier is chosen: by Zeus, from what the record is, never from a message.** A deploy is tier 0, or tier 1 when Zeus's own `git diff` (§3) touches a path in that repository's `rules` list in `repos.json`; a `tier` field in a Hermes message, a page's POST or anywhere else is ignored. A power action is tier 2 because of the command (`zeus power …`, from a fixed list of units in code). An ask is always tier 3, and its record has no field Zeus acts on: no repository, commit, unit, path or command.
+
+**The log record** is the same signed line as §4, plus `"tier"`. In 0.5.0 the new lines (`ask`, `answer`, `ask-expired`) carry it; the deploy, rollback and decline lines gain it when tiers 1 and 2 are built, so nothing that exists today changes shape before the owner confirms.
+
+**What can a hostile message do?** Nothing it couldn't before.
+- A deploy-request message still only makes a record that Zeus verified (allowlisted, on `main`, his own fetch), and it cannot lower a tier: the tier comes from Zeus's own diff against the allowlist file.
+- An ask can put a question in front of the owner, nothing more. Making one needs a shell on `{{SERVER}}` as the owner's user (the same account that could already run `zeus`). Its answer is a string in a signed record; Zeus never runs anything because of it, and a session that reads it must treat it as data (the rule for sessions below). The worst case is a misleading question; the card shows which project asked, keeps everything the session wrote as plain text, and sits in its own section with no hold button, so it can't pass for a deploy.
+- An answer can't be changed after the fact without it showing: the record and the log line are signed (`ZEUS_LOG_KEY`), the first answer wins, a second one is refused, and a record edited outside Zeus is refused rather than answered, left out of `zeus asks` (the read path sessions use; it names the record on stderr) and named by `zeus verify-log`.
+- Rule for sessions: never answer your own ask. `answer.by.via` says which path an answer came by: `elaia` = the Throne passed a tailnet login and address (`--user` and `--ip`, both; the Throne refuses a tap that has no login); `ssh` = a shell over ssh, which can't claim the Throne's path because `--user` and `--ip` are refused in an ssh session, as `zeus approve` refuses them; `local` = a shell on `{{SERVER}}` itself. What it can't do: a local shell on `{{SERVER}}` running as the owner's user can still pass both flags, and nothing (no Janus) checks them for an answer, because an answer runs nothing. So `via` is a record of the path, not a proof of who tapped; the proof for anything that runs stays Janus's (§4).
+
+### The decision inbox (tier 3), as built in 0.5.0
+Until the owner reads the inbox on the Throne, sessions keep asking him in their own question rounds; once he confirms he does, the hub gets a proposal to point sessions here instead (the owner's call, not this repo's).
+
+**The record**, `~/.local/share/zeus/queue/ask-<YYYYMMDD-HHMMSS>-<project>[-n].json` (the id is the file name; asks stay in `queue/` in every state, and the deploy queue skips `ask-*` files):
+```json
+{ "id": "ask-20261109-090000-zeus", "kind": "decision", "tier": 3, "state": "open",
+  "project": "zeus", "title": "Tiers as proposed?", "options": ["Yes, as proposed", "Tier 1 without the second tap"],
+  "context": "A few lines the owner reads first.", "asked": "2026-11-09T09:00:00-07:00", "expires": "2026-11-12T09:00:00-07:00",
+  "by": { "user": "<shell user>", "via": "ssh" }, "answer": null, "zeus": "0.5.0", "sig": "<hmac-sha256 hex>" }
+```
+- **States:** `open` → `answered` (once) | `expired`. `answer` becomes `{ "option": "…", "index": 2, "by": { "user", "via", "ip"? }, "at": "…" }`.
+- **Signed:** `sig` covers the whole record without `sig` (the same canonical JSON as §4), re-signed by Zeus at each change of state. Every change also appends a signed line to `log/approvals-YYYY-MM.jsonl`: `ask` (title, options, expiry, who asked), `answer` (option, index, who answered), `ask-expired`; each with `"kind": "decision", "tier": 3`. `zeus verify-log` checks the lines and, by default, the ask records in `queue/` too (or one record, or a folder of them).
+- **Once:** the first answer makes `queue/.answers/<id>.json` with `O_EXCL`, so two answers at the same moment can't both win; a second answer is refused with the first one named. A record whose `sig` no longer matches is refused, never answered, and `zeus asks` leaves it out (naming it on stderr). Without the key (`secret.env` missing) `zeus asks` says so in plain words and exits 1, never a traceback.
+- **Expiry:** enforced when answering and when `zeus asks` lists (no timer); the page shows an open ask past its expiry as expired without writing.
+- **Limits:** `project` = lowercase letters, digits and dashes (up to 40); `title` one line, up to 200 characters; 2 to 8 options, one line each, up to 80, all different; `context` up to 2000 characters (new lines allowed); `--expires` 10m to 30d.
+
+**The command line** (one-shot, no daemon, nothing started):
+```
+zeus ask --project <id> --title "…" --option "a" --option "b" [--context "…"] [--expires 3d] [--json]   # prints the id
+zeus answer <id> <option text>   |   zeus answer <id> --index <n>                                      # once
+zeus asks [<id>] [--open | --all] [--project <id>] [--json]                                            # sessions read answers here
+```
+Exit codes: 0 done · 1 refused (unknown, not open, already answered, expired, changed outside Zeus, no key) · 2 bad input.
+
+**The Throne:** **Needs your answer** sits above **Waiting for your yes** in the left column. One card per open ask, the one waiting longest on top: the question, a state chip (? needs your answer), who asked (the project id), when, the expiry, the context as text, and the options as buttons in a group labelled with the question. A tap (pointer, Enter or Space) sends `POST api/throne/answer { id, index }`; the page says "Answered …" in the status line, and the card leaves. With motion allowed the card glints once (`api.fx`); with reduced motion nothing moves. Empty state: "Nothing is waiting for you." Below it, a closed **Answered and expired** list (the last ten) shows each answer and who gave it. Everything a session wrote is escaped text, never markup.
+
+**`GET api/throne/summary`** (one small JSON object; for Elaia's Home or any page that only needs counts):
+```json
+{ "asks": 2, "deploys": 1, "needs_you": 3, "line": "2 questions for you · 1 deploy waiting" }
+```
+`asks` = open asks, `deploys` = requests waiting for a yes (`pending`), `needs_you` = both. Home's own `api/throne/status` counts asks too: "Answer 1 question", "Answer 2, review 1", or the deploy wording as before.
 
 ## References
 - Akhawe, D., & Felt, A. P. (2013). Alice in Warningland: A large-scale field study of browser security warning effectiveness. *USENIX Security '13*.
@@ -214,3 +274,4 @@ CLAUDE.md, README.md, VERSION, CHANGELOG.md, LICENSE
 - Saltzer, J. H., & Schroeder, M. D. (1975). The protection of information in computer systems. *Proc. IEEE, 63*(9). (Least privilege: fixed branch and script; separation of privilege: Janus decides who, Zeus decides what, Mnemosyne keeps the record.)
 - Humble, J., & Farley, D. (2010). *Continuous Delivery*. Addison-Wesley. (Deploy the same immutable artifact; roll back by redeploying a known-good version.)
 - W3C (2018). *WCAG 2.1*: SC 2.5.1 Pointer Gestures, 2.5.5 Target Size, 2.3.3 Animation from Interactions.
+- Parasuraman, R., Sheridan, T. B., & Wickens, C. D. (2000). A model for types and levels of human interaction with automation. *IEEE Trans. SMC-A, 30*(3). (§14: the tiers scale the owner's involvement with what an action can change; a decision is advice to a session, not an action.)

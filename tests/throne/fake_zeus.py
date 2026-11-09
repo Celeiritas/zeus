@@ -41,6 +41,16 @@ elif cmd == "rollback":
     print("rolling %s back to %s; the run starts now" % (args[1], (opt("--sha") or "")[:7]))
 elif cmd == "request":
     print("%s: nothing new on main" % args[1])
+elif cmd == "answer":
+    src = D / "queue" / (args[1] + ".json")
+    rec = json.loads(src.read_text(encoding="utf-8"))
+    if rec["state"] != "open":
+        sys.exit("zeus answer: %s was already answered; an answer can't change after it is given." % args[1])
+    i = int(opt("--index"))
+    rec.update(state="answered", answer={"option": rec["options"][i - 1], "index": i, "at": "2026-11-09T09:00:00+00:00",
+                                         "by": {"user": opt("--user") or "owner", "via": "elaia" if opt("--user") else "ssh"}})
+    src.write_text(json.dumps(rec), encoding="utf-8")
+    print("%s: answered (%s)" % (args[1], rec["options"][i - 1]))
 elif cmd == "seen":
     p = Path(os.environ["ZEUS_ALERT"])
     if p.exists():
