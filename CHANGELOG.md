@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.1 – 2026-11-09
+- **Fix: over ssh the "approved … by" line said `by None` (#27).** `zeus deploy <repo>` and `zeus approve <id>` in an ssh session printed `approved (you/argus-ui 4.9.0) by None`, as if nobody had approved. The approval itself was right: Janus had verified the device and its login, and the signed line carried that login. The printed line used the name typed on the command line, and over ssh nobody types one (Janus reads it from whois). It now prints the signed line's `by.user`: `… by <login>; deploying as …`. `zeus rollback` already printed the signed login; it now uses the same helper, so it too can no longer print `by None` when Janus names no login.
+- **When there is no login to show**, the line says what Janus did check and that the name is missing: `… from <device> (Janus named no login); …`, or the client address when he named no device either. It is never Python's `None` (which reads as "nobody") and never the shell's user (the server's account, not who Janus verified), so the screen always agrees with the signed line, whose `by.user` is null in that case. It is a safeguard: today's Janus refuses a device the tailnet reports no login for, so the wording shows only if Janus exits 0 with an answer Zeus cannot read a login from. A login or device name that is empty or only spaces counts as none.
+- Tests: over ssh the line names the whois login (`approve` and the one-line `deploy`); no login but a device; neither login nor device; `by_words`; the rollback line with and without a login. Six of these seven tests failed on 0.6.0 before the fix (five with `by None`, `by_words` because it did not exist); the seventh pins the rollback line with a login, which was already right. An eighth test: a name of only spaces counts as no name.
+- **Docs say what is built** (plan task Z6): the README's "Where it stands" lists what is built and what is not; `docs/design.md` §13 (status of each milestone; which release a server runs is left to `zeus --version` there), §11 (the tree as it is: the modules of 0.3 to 0.6, no `scripts/deploy.sh` in this repository), §9 (the pill's words as built; a list titled "As built" of where the Throne differs from the design: no inline diff of rules files, the hold's `aria-label`, the Deploy button's label, History's 60 rows, two live regions; `recheck` runs `zeus request`), §4 (the printed line), §14 and §15 (status lines); `docs/contract.md` §4 (`rollback`, `ask`, `answer` and `ask-expired` lines exist; `by.user` may be null) and §6 (the printed line). No behaviour changes besides the two printed lines.
+- `bash scripts/check-private.sh --tree` is clean again: two older lines (the 0.4.3 entry below and a comment in `tests/test_alert.py`) now use the `{{SERVER}}` placeholder.
+
 ## 0.6.0 – 2026-11-09
 - **Staged packs** (`docs/design.md` §15, the game session's request of 2026-11-04): a repository whose build needs files only `{{PC}}` has is deployed from an immutable pack the session stages on the server, still only after the owner's hold and only for a commit on `main`.
   - `repos.json` kind `staged-pack`: no clone (`path` fails), a fixed `staging` folder and a fixed `install` script. `check-config` requires both absolute, not symbolic links, owned by Zeus's user and not writable by group or others (the script's folder too), the script outside the staging folder; missing ones are warnings until the first use. `staging` and `install` fail on a `git` repository; an unknown `kind` fails.
@@ -36,7 +43,7 @@
 - Tests: `test_programs_are_found_in_local_bin_when_path_is_short`
 
 ## 0.4.3 – 2026-10-23
-- **Fix:** `scripts/install.sh` always builds before it installs. It used to build only when `dist/zeus` was missing, so after a `git pull` it installed the old build again (LeafyBard ran 0.3.3 with 0.4.2 pulled; no zeus code had changed since, so nothing behaved differently, but the next change would have been missed)
+- **Fix:** `scripts/install.sh` always builds before it installs. It used to build only when `dist/zeus` was missing, so after a `git pull` it installed the old build again (`{{SERVER}}` ran 0.3.3 with 0.4.2 pulled; no zeus code had changed since, so nothing behaved differently, but the next change would have been missed)
 - Tests: `test_install_always_builds`
 
 ## 0.4.2 – 2026-10-23
