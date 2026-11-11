@@ -227,6 +227,8 @@ CLAUDE.md, README.md, VERSION, CHANGELOG.md, LICENSE
 | argus-ui | the `server` plugin kind (Mentor's move; Hermes, Janus and the Throne all wait on it); alert files | existing issues |
 | hermes | turn on the `deploy-request` route; `hermes release --approval <id>` and `hermes keys sync <file>`; `hermes check-config --file`; the Delivery page's Release button (hold) calling Zeus | filed |
 | janus | `action` ∈ deploy · rollback · release, `arrival` for release (on the `verify-approval` issue); `janus check-config --file` | filed |
+| argus-ui (root actions, §16) | slices A1 to A3: the needs-yes path for a tier R ask with a plain `noopener` link; a page for the registered keys as labels (no ids, no setup link); buzzes from root's `attention.jsonl`, the minute-5 reminder and summary counts | planned |
+| hermes (root actions, §16) | Taildrop in and out without Tailscale's operator, ready before `zeus-root` is installed | filed |
 | private config repo | `zeus/repos.json`, `scripts/deploy.sh`, `mnemosyne-journal` job + write key, branch protection if the plan allows | the owner |
 
 ## 13. Build order
@@ -243,6 +245,7 @@ Where it stands (2026-11-09, version 0.6.1): 0.1 to 0.6 are built and merged (0.
 | 0.5 "the inbox" | §14 tiers (proposed) · the decision inbox: `ask` / `answer` / `asks`, Needs your answer on the Throne, `api/throne/summary` | nothing new | the decision inbox is built (0.5.0); tiers 1 and 2 are still a proposal |
 | 0.6 "the staged pack" | staged-pack deploys for a repository whose build needs files only `{{PC}}` has: §15, `zeus stage-request`, kind `staged-pack`, the fixed install script, the Throne's pack card | §14 | built (0.6.0) |
 | 0.7 | power actions as tier 2 (`zeus power gamemode\|desktop\|reboot`) | §14 tier 2 confirmed | planned |
+| root actions (after 0.7, own milestone) | §16 slices Z1 (docs) to Z6, with argus-ui A1 to A3; every slice under `root/` never auto-merges, gets a hostile fresh review and the owner's yes | §14 tier R; Tailscale's operator removed before the install; Hermes's Taildrop without it | Z1 only (docs); nothing under `root/` built |
 | 1.0 | #13 bootstrap on the server, config-repo `deploy.sh`, first approved deploy of argus-ui, retire the manual line | all above; the journal job | partly: Zeus is installed on the server and argus-ui has been deployed through him with approvals over ssh (seen 2026-11-09); #13 stays open until its two "Done means" boxes are ticked; the journal job is Mnemosyne's |
 
 ## 14. Tiers
@@ -255,7 +258,10 @@ Every request Zeus shows has a tier. The tier sets the gesture on the Throne, ho
 | **0 · review** | a deploy (or rollback) of an allowlisted repository's `main` commit that changes none of the realm's rules | the 3-second hold (§9, today) | 72 h (`expire_hours`) | `action: deploy` or `rollback`: the user and the node must be in `approvers.zeus` (today) |
 | **1 · rules** | a deploy whose diff touches a `rules` path of `repos.json` (the gold badge "Changes the realm's own rules": `CLAUDE.md`, Zeus/Janus/Hermes config, units) | the 3-second hold **plus a second tap, "I read the changed rules"**, which only appears after the rules files' names (later their diff) have been shown. Recommended over typing the repository name: typed confirmations are the owner's own, over ssh, and typing on a phone invites copy-paste | 24 h: rules deserve a fresh read | as tier 0, plus `"tier": 1`, so Janus can (later, optional) require a narrower list `approvers.zeus.rules`; absent, the same people as tier 0 |
 | **2 · power** | reboot, a session change (to game mode or to the desktop), anything that interrupts a game or stops services | the 3-second hold; **refused while a game runs** unless a second hold, "A game is running. Do it anyway?". It mirrors the reboot gate of the server's operations notes and never weakens it | 10 min: a power action is about now | `action: power`, `unit` from a fixed list in code; the user and node as tier 0 |
+| **R · root** (proposed, §16) | a listed change that needs root on `{{SERVER}}` (a firewall rule, a service restart), asked by a session with `zeus root-ask <id>` | not a hold on the Throne: a tap on the **key page**, on its own port, then the fingerprint, signed for that one action, the key page's exact origin and one moment | per entry: 24 h for network changes, 1 h for restarts; the challenge itself 180 s | not asked. Janus is not involved: the root-side runner verifies the signature itself (§16.4). Zeus's ask is data and starts nothing |
 | **3 · decisions** | a plain question with options, asked by a session, answered by the owner; **no side effect in Zeus** | one tap on an option (a choice, not a hold: nothing runs) | set by the asker, 10 min to 30 d, default 3 d | not asked: like Decline, an answer changes nothing that runs. The Throne passes who tapped (`tailscale serve`'s headers) and Zeus records it |
+
+**Tier R** (root actions from the phone, §16) sits beside the others, not above them. Elaia's people and roles do not matter for it, so "every login counts as the owner" is harmless there. **The approver recorded** is the key (its key ref, its action, the device it was registered from, the check words of its sitting), plus the login Serve passed, marked "seen, not proof". The line is root's own log line (`docs/contract.md` §8), not Zeus's signed approval line.
 
 **How a tier is chosen: by Zeus, from what the record is, never from a message.** A deploy is tier 0, or tier 1 when Zeus's own `git diff` (§3) touches a path in that repository's `rules` list in `repos.json`; a `tier` field in a Hermes message, a page's POST or anywhere else is ignored. A power action is tier 2 because of the command (`zeus power …`, from a fixed list of units in code). An ask is always tier 3, and its record has no field Zeus acts on: no repository, commit, unit, path or command.
 
@@ -397,6 +403,85 @@ By hand, as §6: the Throne's **Roll back → 0.45.0** hold or `ssh {{SSH}} 'zeu
 - **Flood requests:** each is a record; a newer one supersedes the older; nothing runs without the owner's hold.
 
 **Once, by the owner:** a read-only deploy key for the game's repository (Zeus's own, like §2's private repos) and its ssh alias; the staging folder (`mkdir -p` it, `chmod 700`); the install script copied from the example; the `repos.json` entry through the private config repo; `zeus check-config`.
+
+## 16. Root actions from the phone
+**Status: designed 2026-11-11, nothing built.** This section is the public, condensed form of a longer private design (v3, with the threat model's evidence, every screen's words and the review that shaped it); a slice is built from the two together. Nothing under `root/` exists yet. The first slice (Z1) is this text and `docs/contract.md` §8. The record formats are in `docs/contract.md` §8.
+
+### 16.1 What it is for
+Some changes on `{{SERVER}}` need root: a firewall rule, a service restart. Today the owner types a `sudo` line at `{{PC}}`. This adds a second way: **one listed change at a time, approved from `{{PHONE}}` with the fingerprint, for exactly that change, just now.** It adds a way and never replaces `sudo`. The list is fixed and short; it is never a free command.
+
+### 16.2 Threat model, in short
+What is protected is root on `{{SERVER}}`. The owner's yardstick: a design that lets "whoever counts as the owner" cause a root action without his fingerprint is not acceptable. The facts that shape the answer:
+- Everything Serve answers on port 443 is one origin (Elaia, its plugins, other pages), and every login that reaches Elaia counts as the owner. So a yes given **inside Elaia** proves nothing to root.
+- A passkey's RP ID ignores the port, but the origin written into the signed client data does not. The key page therefore lives on **its own HTTPS port** of the same address, and root checks the exact origin.
+- Anything running as the normal user on `{{SERVER}}` (a plugin, a downloaded tool, a session) can rewrite Elaia and Zeus. So nothing it can write may start a root action, and nothing it can write may change what the owner reads when he taps.
+- A pull request that merges itself is not a pull request the owner read. Root code is therefore the exception to auto-merge (`CLAUDE.md`).
+- The screen PIN may stand in for the fingerprint. Until a test away from home shows otherwise, the list holds only changes that have an undo, plus restarts, which change no setting.
+
+Attackers considered: another tailnet login, a script injected on port 443, any process as the normal user, a stolen unlocked phone, a replayed or altered request, a session that asks for one thing while the owner approves another, a bug in the root side, a taken-over Google account, a bad action script, and a Claude session or browser extension on `{{PC}}`. For each, the private design states what it must never manage.
+
+### 16.3 The pieces
+| Piece | Runs as | What it does |
+|---|---|---|
+| **Key page** (static files, one `list.json`) | nobody: served by Tailscale Serve from a root-owned folder | shows what will change and how to undo it, asks the phone for the signature, shows progress and the last ten runs |
+| **`zeus-root-gate`** | its own system account: no login, no home, no rights; socket-activated on `127.0.0.1:<gateport>` (below 1024, so only systemd can bind it) | passes messages: checks they come from the key page, from an owner, for a nonce it issued; writes one record into root's inbox. It never decides whether a signature is good and never runs anything |
+| **`zeus-root`** (the runner and its command) | root, a one-shot started by a path unit, **no network** | takes records out of the inbox, verifies the signature and everything around it, runs one listed script, undoes once on failure, keeps the reach check |
+| **`actions.json`** (the fixed list) | root-owned file | per entry: id, kind, words, script, its sha256, undo, flags. Changes only by the owner's own line at `{{PC}}` |
+| **Zeus side** (later slices) | the normal user | `zeus root-ask <id>` makes a tier R ask; the Throne shows a card; History reads root's log |
+
+No polkit rule and no sudoers line: the normal user gains no new right. Root holds public keys only. Idle cost is zero (a socket unit and a path unit are kernel watches, like `zeus-queue.path`). The gate's rules and the runner's checks are listed in the private design; the contract is `docs/contract.md` §8.
+
+### 16.4 The flow, from ask to run
+1. A session runs `zeus root-ask <id>`. Zeus makes a tier R ask whose title is copied from the list; the phone buzzes *Needs your yes*. The ask can make nothing run.
+2. The owner opens the key page (from Elaia's card by a plain `noopener` link, or from a home-screen icon that never passes through Elaia). The page reads the action once, refuses to run framed or while it has an opener, blanks itself if its address changes, and keeps its button inactive until its words have been on screen for about a second.
+3. He taps the button named after the change (for example "Close the 3 ports"), then touches the fingerprint sensor. Four acts: the buzz, Review and confirm, the button, the fingerprint.
+4. **The challenge** is SHA-256 over `zeus-root/v1\n` and the canonical JSON of the action id, its params, the sha256 of the installed `actions.json`, a random nonce, an expiry (at most 180 s) and the key page's exact origin. The page recomputes it from its own root-owned copy and refuses on any difference, so a lying gate is caught.
+5. The gate checks (in order): the connection comes from Serve; method, size and content type; the exact `Origin` and `Sec-Fetch-Site: same-origin`; no CORS header on any answer; strict JSON; exactly one login and one address, resolved by `tailscale whois` to a device whose user equals the login; the login is an owner; per-login limits. It then writes one record.
+6. **The runner**, for each start: renames every inbox entry into a root-only folder first; opens each with `O_NOFOLLOW` and checks the open file (a regular file, owned by the gate, one link, at most 16 KB); parses strictly (no repeated keys); anything else goes to quarantine. Then it checks the file rules, the pause switch, the lock, the limits and **Serve's mapping** (the key page's port still maps to the page folder and the gate; no Tailscale operator is set). It verifies the assertion: the key is registered, not revoked, belongs to that action and that device; client data type, challenge, exact origin, not framed; the RP ID hash; user present and user verified; the counter; the signature; freshness; the list and the script's hash. It marks the nonce used **before** anything runs, refuses while a game runs, then runs the script with no arguments and an empty environment, 120 s at most.
+7. **Hold before the change, roll back after it** (the rule of §6). A non-zero exit before the script printed `ZEUS_STAGE=change` means stopped, nothing changed. After it, the entry's undo runs once. An undo that fails too writes an attention line. An entry with no undo (a restart) has nothing to run; the result says the service did not come back, and the attention line buzzes.
+8. **The reach check** for an entry that can cut the phone off: root writes a deadline (10 minutes) to disk and starts a template timer. The key page, polling `result`, sends a `reach` record: kept. Any opening of the key page from that device checks in. At minute 5 without a check-in one reminder buzz. At the deadline, with no check-in, the paired undo runs by itself, also after a restart (a boot unit handles passed deadlines), and one *Something stopped working* buzz follows. A running game delays the put-back by at most 15 minutes.
+9. The result and one log line are written; the page says Done. "Still answers this phone" is all the check-in proves.
+
+### 16.5 What is refused
+A request that is not a POST from the key page's own origin; a login that is not an owner; an unknown or revoked key, a key for another action or device; a framed page; user verification missing; a stale, used or expired nonce; a changed list or script; a counter that goes backwards; Serve's mapping changed, or a Tailscale operator set; files that break the ownership and mode rules; a game running (there is no "do it anyway"); another run holding the lock (30 s, then busy); a paused system; a limit reached. Three failed signatures of a registered key in an hour pause every root action for an hour. Unknown or malformed records are "garbage": logged, counted apart, never a pause. The log names the class of every refusal.
+
+### 16.6 The first list
+| id | Kind | What | Undo | Can cut you off |
+|---|---|---|---|---|
+| `self-test` | check | runs as root and reports versions, file rules, Serve's mapping and the keys it expects; changes nothing | none needed | no |
+| `close-media-lan` | change | closes the three media ports to the apartment network, still open through Tailscale | `open-media-lan` | yes |
+| `open-media-lan` | put-back | opens them again | `close-media-lan` | yes |
+| `restart-bluetooth` | change (a restart) | restarts `bluetooth.service`, waits up to 15 s until it is active | none (`"undo": null`) | no |
+| `restart-resolved` | change (a restart) | restarts `systemd-resolved.service`, waits up to 15 s until it is active | none (`"undo": null`) | no |
+
+A restart changes no setting; the service starts again from its saved settings, so there is nothing to put back. An entry with `"undo": null` must have `can_cut_you_off: false`. `check-key` (not an entry) lets the Self-test try every registered key and runs nothing. `tailscaled`, `NetworkManager` and `firewalld` stay off the list because a restart can cut the phone off and has no undo to run; `sddm` ends the Game mode session and belongs to tier 2. An entry is added only in four steps: a session writes it, a fresh-context reviewer reads it hostilely, the owner installs it with his own line at `{{PC}}` (the installer prints every entry added, changed or removed, with checksums), and he registers its key in the same sitting. Never from a page, a message, a session or a push.
+
+### 16.7 The owner's decisions (2026-11-11)
+- **Build it, in small steps.** The root parts never merge by themselves; each slice gets a hostile fresh reviewer and the owner's yes before it merges. The first list also holds service restarts: `restart-bluetooth` and `restart-resolved`.
+- **The gesture:** one tap on the button named after the change, then the fingerprint; the button becomes active after about a second.
+- **A game running** at the start means "try after the game". A game running when a put-back is due delays it by at most 15 minutes.
+- **No spare key.** The `sudo` line at `{{PC}}` is the spare.
+- **Kept as proposed:** one passkey per action, saved in the phone's password manager and tied to the phone's tailnet device (the name on Android's sheet is a cue, not a lock); setup only from an address the terminal shows (typed; no QR code), never from Elaia; a home-screen icon; asks wait 24 h for network changes and 1 h for restarts; the challenge lives 180 s; no buzz for "done"; Decline needs no fingerprint; the list changes only from `{{PC}}`; release installs are not on it; names `zeus-root`, `zeus-root-gate` and "the key page", under Zeus.
+- **Tailscale's operator is removed before the install.** Today the normal user is Tailscale's operator (so Hermes can use Taildrop without `sudo`), and an operator can repoint Serve. A program running as that user could then put its own page at the key page's exact origin and show one change while getting a signature for another, or slip in its own key at setup; the runner's check looks at one moment and can be stepped around. So the operator is removed first, Hermes gets a Taildrop path that does not need it, and the installer refuses while an operator is set. Changing Serve then needs `sudo`, as every setup line already does.
+
+### 16.8 Build slices
+Every slice that touches `root/` follows the rule in `CLAUDE.md`: no auto-merge, a fresh-context hostile reviewer, the owner's yes in the chat.
+| Slice | What | Tests (the main ones) |
+|---|---|---|
+| **Z1** | this section, tier R in §14, `docs/contract.md` §8 | `check-private` |
+| **Z2** runner and command | the checks of 16.4 step 6 and 7, the reach tick and boot check, `check-key`, `enroll` (two prompts, DER keys, no CBOR), `rebind`, `revoke`, `keys`, `verify-log`, `pause` | the WebAuthn test vectors; real and forged assertions; a hostile inbox (link, FIFO, folder, socket, hard link, swapped file, 60 entries); pause counting; undo once; reach cases; `"undo": null` rules |
+| **Z3** gate and units | the gate's rules one by one; sysusers and tmpfiles files; the units | each refusal; nonce bound to login and device; finish once; no `Access-Control-*` header; no key id in any log |
+| **Z4** key page | the screens, the challenge recompute, the frame, opener, hash-change and one-second rules, Wake Lock | a browser with a virtual authenticator, at 360 px, 44 px targets, keyboard, reduced motion |
+| **Z5** install bundle | installer, uninstaller, `actions.example.json`, script examples | a dry run in a container; set aside, never delete; refuses while an operator is set |
+| **Z6** Zeus side | `zeus root-ask`, the Throne's Root changes section, History rows from root's log | ask expiry per entry; unknown id refused; every outcome parsed |
+| **A1 to A3** (argus-ui) | the needs-yes path for tier R with a plain `noopener` link; a page that explains the setup and lists keys as labels (no setup link, no ids); buzzes from `attention.jsonl`, the minute-5 reminder, summary counts | their own repo's tests |
+
+Order: Z1; Z2 and Z3; Z4; Z5; one hostile review of Z2 to Z5 together; the owner's install (after the operator is removed); Z6 and A1 to A3, which only read.
+
+### 16.9 What stays private, and what stays unsolved
+**Never in this repository:** the real `actions.json`, the real action scripts, the installer with the real address, ports and checksums, the tailnet name, the owner's names. The repository carries `.example` files with placeholders.
+
+**Unsolved or limited:** the PIN may stand in for the fingerprint (to be tested away from home); passkeys of the key page share a host name with port 443 until a name of its own exists (a later version), which could let a page on 443 delete them silently or learn their ids, though no root action can come of it; the name on Android's sheet is a cue; a bug in the root side is still a root bug; a taken-over tailnet admin gets root by an SSH rule without this design; expiry trusts the server's clock; "gaming first" is only as good as the game list; Elaia's buzzes can be silenced by a program as the normal user, so the key page's own last-runs list, read from root's log, is the place that cannot lie.
 
 ## References
 - Akhawe, D., & Felt, A. P. (2013). Alice in Warningland: A large-scale field study of browser security warning effectiveness. *USENIX Security '13*.
