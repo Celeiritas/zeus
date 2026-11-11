@@ -258,6 +258,9 @@ run(async b => {
   check(await oldh.textContent() === 'Old requests' && await oldh.evaluate(h => { const c = getComputedStyle(h); return c.fontSize === '14px' && c.fontWeight === '600'; })
     && await m.locator('#t-old + ul .tablet.old').count() === 1 && await oldh.evaluate((h, f) => !!(document.querySelector(`.tablet[data-id="${f}"]`).compareDocumentPosition(h) & Node.DOCUMENT_POSITION_FOLLOWING), FRESH),
     'stale cards sit under their own small heading, Old requests (14 px, 600), after the cards that need a yes');
+  const lv5 = await old.evaluate(li => { const h = li.querySelector('.thead h4, .thead h5'), f = document.querySelector('.tablet:not(.old) .thead h4'), a = getComputedStyle(h), b = getComputedStyle(f);
+    return [h.tagName, a.fontSize === b.fontSize && a.fontWeight === b.fontWeight && a.color === b.color]; });
+  check(lv5[0] === 'H5' && lv5[1], `0.7.1: under Old requests (h4) a card title is one level below (${lv5[0]}) and looks the same as the others`);
   check(await m.locator('section[aria-labelledby="t-wait"] > ul.tablets:not([aria-labelledby]) .tablet', {hasText: 'It needs nothing from you'}).count() === 0, 'nothing among the cards that need a yes says it needs nothing');
   await old.scrollIntoViewIfNeeded();
   if (process.env.SHOTS) await old.screenshot({path: path.join(process.env.SHOTS, 'card-412-stale.png')});
@@ -335,6 +338,9 @@ run(async b => {
   const eq = z.locator('.tablet[data-id="20261111-060000-argus-ui-4444444"]');
   check(await eq.locator('button.go').count() === 1 && !/Older than what runs/.test(await eq.textContent()) && await eq.evaluate(li => !li.classList.contains('old')),
     'an equal version with another commit is not stale: it keeps its Deploy');
+  check(await eq.locator('.same').count() === 1 && await eq.locator('.same').textContent() === 'Same version number as what runs, a newer commit on main.'
+    && await z.locator('.tablet .same').count() === 1, '0.7.1: the equal-version card says in one line why it is there (and no other card does)');
+  if (process.env.SHOTS) { await eq.scrollIntoViewIfNeeded(); await z.screenshot({path: path.join(process.env.SHOTS, 'equal-version-412x915.png')}); }
   const same = z.locator('.tablet[data-id="20261111-060001-hermes-ddddddd"] .do .meta');
   check(await same.textContent() === 'This is the version Zeus deployed last. He installs it again, then checks that it works. If the check fails, there is nothing for him to put back.',
     'the very commit Zeus deployed last: the sentence promises no put-back (zeus/deploy.py restore() has none)');
@@ -347,5 +353,14 @@ run(async b => {
   check(/the newer version was installed some other way/.test(await dp.locator('.live[data-repo="you/hermes"]').textContent()) === false, 'hermes has no drift: nothing said');
   await dp.close();
   fs.unlinkSync(path.join(D, 'queue', '.done', '20261111-070000-argus-ui-5555555.json'));
+  // 0.7.1: while Zeus rolls a program back (what runs is then older than his record), the row does not say "a new version"
+  rec('20261111-080000-argus-ui-6666666', {action: 'rollback', state: 'deploying', sha: PREV, version: '4.32.0', deploy: {started: true, unit: 'zeus-deploy-y'}}, 'queue/.done');
+  const rb = await page(b, 412, 915); await rb.setExtraHTTPHeaders(WHO);
+  await rb.goto(BASE + 'throne'); await rb.locator('.run').first().waitFor();
+  const rblv = rb.locator('.live[data-repo="you/argus-ui"]');
+  check(/Zeus is rolling it back now\./.test(await rblv.textContent()) && !/deploying a new version|installed some other way/.test(await rblv.textContent()), '0.7.1: while Zeus rolls it back, the row says so, not "a new version"');
+  if (process.env.SHOTS) { await rblv.scrollIntoViewIfNeeded(); await rb.screenshot({path: path.join(process.env.SHOTS, 'rolling-back-412x915.png')}); }
+  await rb.close();
+  fs.unlinkSync(path.join(D, 'queue', '.done', '20261111-080000-argus-ui-6666666.json'));
   srv.close();
 });

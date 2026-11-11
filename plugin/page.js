@@ -27,6 +27,9 @@ leafy.register('throne', (() => {
   const commit = r => `<a class="commit" href="https://github.com/${e(r.repo)}/commit/${e(r.sha)}" target="_blank" rel="noopener">See the change on GitHub (${e(String(r.sha || '').slice(0, 7))})</a>`;
   const liveOf = r => (S.deployed || []).find(d => d.repo === r.repo) || {};
   const runs = d => d && d.running && d.running.version ? String(d.running.version) : '';
+  const vnum = v => /^[0-9]{1,9}(\.[0-9]{1,9}){0,3}$/.test(String(v || '')) ? String(v).split('.').map(Number).concat([0, 0, 0]).slice(0, 4).join('.') : null;
+  // 0.7.1: a request with the same version number as what runs (and not the very commit Zeus deployed last) says why it is there
+  const sameNumber = r => { const d = liveOf(r), a = vnum(r.version); return !r.stale && !!a && a === vnum(runs(d)) && !(d.deployed && d.deployed.sha === r.sha); };
   // release notes as readable text: escape first, then only headings, bullets, bold and code spans become plain styled
   // text. A link keeps its words and loses its address (nothing becomes a link); no raw #, * or backtick is left.
   const inline = s => String(s).split(/(`[^`\n]+`)/).map((t, i) => i % 2 ? `<code>${e(t.slice(1, -1))}</code>`
@@ -106,9 +109,10 @@ leafy.register('throne', (() => {
           <p class="meta" id="no-${id}">Nothing is installed. The request closes.</p></div>`;
     return `<li class="tablet${r.stale ? ' old' : ''}" data-id="${id}">
       ${r.stale ? `<p class="olds"><span aria-hidden="true">↓</span> Older than what runs now (${e(runs(liveOf(r)))})</p>` : ''}
-      <div class="thead"><h4>${e(name(r))} <b>${e(ver(r))}</b></h4>${r.stale ? '' : chip(r.state, STATE)}</div>
+      <div class="thead">${r.stale ? `<h5>${e(name(r))} <b>${e(ver(r))}</b></h5>` : `<h4>${e(name(r))} <b>${e(ver(r))}</b></h4>${chip(r.state, STATE)}`}</div>
       ${r.stale ? `<p class="meta">It needs nothing from you and ${e(until(r.expires).replace(/^expires/, 'expires by itself'))}.</p>`
         : `<p class="meta facts">${staged(r) ? '' : chip(r.checks || 'none', CHECKS)}<span>${e(files)}</span><span>${e(until(r.expires))}</span></p>`}
+      ${sameNumber(r) ? '<p class="meta same">Same version number as what runs, a newer commit on main.</p>' : ''}
       ${(r.rules_changed || []).length ? `<p class="rules"><span aria-hidden="true">⚑</span> <b>Changes the realm's own rules:</b> ${r.rules_changed.map(f => `<code>${e(f)}</code>`).join(', ')}. Read those files before you hold.</p>` : ''}
       ${r.state === 'held' && !r.stale ? '<p class="note">Janus could not answer last time, so Zeus held it. Hold Deploy again once Janus is back.</p>' : ''}
       ${refused ? `<div class="note bad"><b>Janus refused the last approval:</b><ul>${r.janus.reasons.map(x => `<li>${e(x)}</li>`).join('')}</ul></div>` : ''}
@@ -146,14 +150,14 @@ leafy.register('throne', (() => {
     'no-record': () => 'Zeus has not deployed it yet; this version was installed some other way.'};
   function liveRow(d) {
     const l = d.deployed, p = d.previous, k = e(name(d)), id = e(d.repo.replace('/', '--')), run = runs(d);
-    const odd = d.drift in DRIFT, open = openOther.has(d.repo), busy = (S.deploying || []).some(x => x.repo === d.repo);
+    const odd = d.drift in DRIFT, open = openOther.has(d.repo), busy = (S.deploying || []).find(x => x.repo === d.repo);
     const who = l && l.approval && l.approval.user ? `, approved${by(l.approval)}` : '';
     const back = p ? `<div class="act"><button type="button" class="back" data-sha="${e(p.sha)}" aria-describedby="rb-${id}">Roll back to ${e(ver(p))}</button>
         <p class="meta" id="rb-${id}">Zeus puts ${e(ver(p))} back in place of ${e(run || ver(l || {}))}, then checks that it works.</p></div>` : '';
     return `<li class="live" data-repo="${e(d.repo)}">
       <h4>${k}</h4>
       ${run ? `<p class="now">Runs now: <b>${e(run)}</b></p>` : l ? `<p class="now">Last deployed by Zeus: <b>${e(ver(l))}</b></p>` : ''}
-      ${busy && odd ? '<p class="meta">Zeus is deploying a new version now.</p>' : odd ? `<p class="meta">${e(DRIFT[d.drift](l ? ver(l) : ''))}</p>`
+      ${busy && odd ? `<p class="meta">${busy.action === 'rollback' ? 'Zeus is rolling it back now.' : 'Zeus is deploying a new version now.'}</p>` : odd ? `<p class="meta">${e(DRIFT[d.drift](l ? ver(l) : ''))}</p>`
         : l ? `<p class="meta">Zeus deployed it ${e(ago(l.at))}${who}.</p>` : run ? '' : '<p class="meta">Nothing deployed by Zeus yet.</p>'}
       ${staged(d) ? '<p class="meta">A new version comes from a pack staged by its session.</p>'
         : `<div class="act"><button type="button" class="re" data-repo="${e(d.repo)}" aria-describedby="re-${id}">Check main again</button>
