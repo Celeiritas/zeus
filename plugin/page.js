@@ -1,7 +1,8 @@
 // Zeus · Throne (docs/design.md §9, §14): the questions sessions asked you, what waits for your yes, what is deploying, what runs now, and what happened.
 // A list first: every card and button is in the tab order, and each state is an icon plus a word. Pictures only confirm
 // what the words already say (the bolt on an approval, the tablet crumbling on a decline; both skipped with reduced motion).
-// Deploy and Roll back are 3-second holds (api.holdConfirm); Decline asks for a reason word. Nothing here decides:
+// Deploy and Roll back are 3-second holds (api.holdConfirm), each with one sentence saying what it does; Decline sits apart
+// and asks for a reason word. A request older than what runs (stale, 0.7.0) offers Decline only. Nothing here decides:
 // each button runs zeus through the plugin, and Zeus, with Janus behind him, says yes or no.
 // Needs your answer (the decision inbox, tier 3): a session's question with its options as buttons. A choice is a tap,
 // not a hold, because an answer runs nothing; it is recorded once and can't be changed afterwards.
@@ -16,12 +17,38 @@ leafy.register('throne', (() => {
   const FILTERS = [['all', 'All'], ['waiting', 'Waiting'], ['expired', 'Expired'], ['failed', 'Failed']];
   const FAILED = ['failed', 'rolled-back', 'refused'];
   let A = null, ROOT = null, S = null, filter = 'all', timer = 0, said = '', heard = '', stale = false, askedOpen = false;
-  const openLogs = new Set();
+  const openLogs = new Set(), openNotes = new Set();   // what the reader unfolded stays unfolded across redraws
   const $ = (s, el = ROOT) => el.querySelector(s), $$ = (s, el = ROOT) => [...el.querySelectorAll(s)];
   const e = s => A.esc(String(s ?? ''));
   const name = r => String(r.repo || '').split('/').pop();
   const ver = r => r.version || String(r.sha || '').slice(0, 7);
-  const commit = r => `<a href="https://github.com/${e(r.repo)}/commit/${e(r.sha)}" target="_blank" rel="noopener">${e(String(r.sha || '').slice(0, 7))}</a>`;
+  const commit = r => `<a class="commit" href="https://github.com/${e(r.repo)}/commit/${e(r.sha)}" target="_blank" rel="noopener">See the change on GitHub (${e(String(r.sha || '').slice(0, 7))})</a>`;
+  const liveOf = r => (S.deployed || []).find(d => d.repo === r.repo) || {};
+  const runs = d => d && d.running && d.running.version ? String(d.running.version) : '';
+  // release notes as readable text: escape first, then only headings, bullets, bold and code spans become plain styled
+  // text. A link keeps its words and loses its address (nothing becomes a link); no raw #, * or backtick is left.
+  const inline = s => String(s).split(/(`[^`\n]+`)/).map((t, i) => i % 2 ? `<code>${e(t.slice(1, -1))}</code>`
+    : e(t).replace(/\[([^\]]*)\]\([^)\s]*\)/g, '$1').replace(/\*\*(.+?)\*\*|__(.+?)__/g, (m, a, b) => `<b>${a || b}</b>`).replace(/[*`]/g, '')).join('');
+  const noteLines = r => (r.changelog || []).flatMap(l => String(l).split('\n')).filter(l => l.trim());
+  function notes(lines) {
+    const out = []; let list = false;
+    const close = () => { if (list) { out.push('</ul>'); list = false; } };
+    for (const l of lines) {
+      const h = /^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$/.exec(l), li = /^\s*[-*+]\s+(.*)$/.exec(l);
+      if (h) { close(); out.push(`<p class="nh">${inline(h[1])}</p>`); }
+      else if (li) { if (!list) { out.push('<ul class="nl">'); list = true; } out.push(`<li>${inline(li[1])}</li>`); }
+      else { close(); out.push(`<p>${inline(l.replace(/^\s{0,3}>\s?/, ''))}</p>`); }
+    }
+    close(); return out.join('');
+  }
+  // the one sentence under Deploy: what happens, and what Zeus puts back if the health check fails. He puts back his
+  // own last deploy (state.deployed), which is not always what runs now; the sentence says so when they differ.
+  function consequence(r) {
+    const d = liveOf(r), own = d.deployed && ver(d.deployed), run = runs(d);
+    const back = !own ? 'there is no earlier version for him to put back.'
+      : run && run !== own && d.drift !== 'same' ? `he puts back ${own}, his own last deploy (not ${run}, which runs now).` : `he puts ${own} back.`;
+    return `Zeus installs it, then checks that it works. If the check fails, ${back}`;
+  }
   const chip = (k, map) => { const [i, w] = map[k] || ['•', k || 'unknown']; return `<span class="chip s-${e(k)}"><span aria-hidden="true">${i}</span> ${e(w)}</span>`; };
   const plural = (n, one) => `${n} ${one}${n === 1 ? '' : 's'}`;
   function ago(iso) {
@@ -62,24 +89,35 @@ leafy.register('throne', (() => {
 
   /* ---------- the four sections ---------- */
   function tablet(r) {
+    // In this order, so a tired reader decides on the first screen: (a) one summary line, (b) Deploy with one sentence of
+    // consequence, (c) Decline apart, quieter, with its own sentence, (d) the notes folded, (e) the commit inside the fold.
+    // A stale request (not newer than what runs) says so first and offers Decline only: nothing on it deploys.
     const refused = r.janus && r.janus.verdict === 'refused' && (r.janus.reasons || []).length;
-    const clog = (r.changelog || []).slice(0, 10).map(l => `<li>${e(String(l).replace(/^\s*[-*]\s*/, ''))}</li>`).join('');
+    const lines = noteLines(r), open = openNotes.has(r.id), id = e(r.id);
     const files = Number.isInteger(r.files) ? plural(r.files, 'file') + ' changed' : 'files: git could not say';
     const pack = staged(r) && r.pack ? `<p class="meta facts pack"><span>Pack ${e(mb(r.pack.size))} · ${e(plural(Number(r.pack.files) || 0, 'file'))}</span><span>${r.tests ? `Tests: ${e(r.tests)}` : 'No tests reported'} <span class="sr">(as the session reported them)</span></span></p>` : '';
-    return `<li class="tablet" data-id="${e(r.id)}">
-      <div class="thead"><h4>${e(name(r))} <b>${e(ver(r))}</b></h4>${chip(r.state, STATE)}</div>
-      <p class="subj">${e(r.subject)} <span class="meta">· ${commit(r)}</span></p>
-      ${clog ? `<ul class="clog" aria-label="What changed">${clog}</ul>` : ''}
-      <p class="meta facts">${staged(r) ? '' : chip(r.checks || 'none', CHECKS)}<span>${e(files)}</span><span>${e(until(r.expires))}</span></p>${pack}
+    const decline = `<div class="dont"><button type="button" class="no" aria-expanded="false" aria-describedby="no-${id}">Decline</button>
+          <p class="meta" id="no-${id}">Nothing is installed. The request closes.</p></div>`;
+    return `<li class="tablet${r.stale ? ' old' : ''}" data-id="${id}">
+      ${r.stale ? `<p class="olds"><span aria-hidden="true">↓</span> Older than what runs now (${e(runs(liveOf(r)))})</p>` : ''}
+      <div class="thead"><h4>${e(name(r))} <b>${e(ver(r))}</b></h4>${r.stale ? '' : chip(r.state, STATE)}</div>
+      ${r.stale ? `<p class="meta">It needs nothing from you and ${e(until(r.expires).replace(/^expires/, 'expires by itself'))}.</p>`
+        : `<p class="meta facts">${staged(r) ? '' : chip(r.checks || 'none', CHECKS)}<span>${e(files)}</span><span>${e(until(r.expires))}</span></p>`}
       ${(r.rules_changed || []).length ? `<p class="rules"><span aria-hidden="true">⚑</span> <b>Changes the realm's own rules:</b> ${r.rules_changed.map(f => `<code>${e(f)}</code>`).join(', ')}. Read those files before you hold.</p>` : ''}
-      ${r.state === 'held' ? '<p class="note">Janus could not answer last time, so Zeus held it. Hold Deploy again once Janus is back.</p>' : ''}
+      ${r.state === 'held' && !r.stale ? '<p class="note">Janus could not answer last time, so Zeus held it. Hold Deploy again once Janus is back.</p>' : ''}
       ${refused ? `<div class="note bad"><b>Janus refused the last approval:</b><ul>${r.janus.reasons.map(x => `<li>${e(x)}</li>`).join('')}</ul></div>` : ''}
-      <div class="acts"><button type="button" class="go">Deploy ${e(name(r))} ${e(ver(r))}</button>
-        <button type="button" class="no" aria-expanded="false">Decline</button>
-        ${staged(r) ? '' : `<button type="button" class="re" data-repo="${e(r.repo)}">Check main again</button>`}</div>
+      <div class="decide">${r.stale ? `${decline}<p class="meta">To go back to an older version, use Roll back below.</p>`
+        : `<div class="do"><button type="button" class="go" aria-describedby="go-${id}">Deploy ${e(name(r))} ${e(ver(r))}</button>
+          <p class="meta" id="go-${id}">${e(consequence(r))}</p></div>${decline}`}</div>
       <form class="why" hidden><fieldset><legend>Why not deploy ${e(name(r))} ${e(ver(r))}?</legend>
         ${REASONS.map(([v, l], i) => `<label><input type="radio" name="why-${e(r.id)}" value="${v}" ${i ? '' : 'checked'}> ${l}</label>`).join('')}</fieldset>
         <div class="acts"><button type="submit">Decline ${e(name(r))} ${e(ver(r))}</button><button type="button" class="keep">Keep it waiting</button></div></form>
+      <button type="button" class="more" aria-expanded="${open}" aria-controls="notes-${id}">${open ? 'Hide the notes' : lines.length ? `Read the notes (${plural(lines.length, 'line')})` : 'More about this version'}</button>
+      <div class="fold" id="notes-${id}"${open ? '' : ' hidden'}>
+        <p class="subj">${e(r.subject)}</p>
+        <p>${commit(r)}</p>${pack}
+        ${lines.length ? `<div class="notes" aria-label="What changed">${notes(lines)}</div>` : '<p class="meta">This version came without notes.</p>'}
+      </div>
     </li>`;
   }
   function running(r) {
@@ -129,7 +167,7 @@ leafy.register('throne', (() => {
         ${(S.asked || []).length ? `<details class="asked"${askedOpen ? ' open' : ''}><summary>Answered and expired (${S.asked.length})</summary><ul class="hist">${S.asked.map(askedRow).join('')}</ul></details>` : ''}</section>
       <section aria-labelledby="t-wait"><h3 id="t-wait">Waiting for your yes</h3>
         ${S.waiting.length ? `<ul class="tablets">${S.waiting.map(tablet).join('')}</ul>`
-          : '<p class="empty">Nothing waits for your yes. A new commit on <code>main</code> shows up here within the hour, or press Check main again under Deployed now.</p>'}</section>
+          : '<p class="empty">Nothing waits for your yes. A new version shows up here within the hour.</p>'}</section>
       ${S.deploying.length ? `<section aria-labelledby="t-run"><h3 id="t-run">Deploying</h3><ul class="runs">${S.deploying.map(running).join('')}</ul></section>` : ''}
       </div><div class="tcol">
       <section aria-labelledby="t-live"><h3 id="t-live">Deployed now</h3>
@@ -172,7 +210,12 @@ leafy.register('throne', (() => {
     const det = $('details.asked'); if (det) det.ontoggle = () => { askedOpen = det.open; };
     $$('.tablet').forEach(li => {
       const r = S.waiting.find(x => x.id === li.dataset.id); if (!r) return;
-      A.holdConfirm($('.go', li), () => ask('approve', {id: r.id, sha: r.sha}, `Approved. Zeus is deploying ${name(r)} ${ver(r)}.`, li, x => A.fx.bolt(x)));
+      const go = $('.go', li);   // a stale request has no Deploy: nothing on its card can send approve
+      if (go && !r.stale) A.holdConfirm(go, () => ask('approve', {id: r.id, sha: r.sha}, `Approved. Zeus is deploying ${name(r)} ${ver(r)}.`, li, x => A.fx.bolt(x)));
+      const more = $('.more', li), fold = $('.fold', li);
+      more.onclick = () => { const open = fold.hidden; fold.hidden = !open; more.setAttribute('aria-expanded', String(open));
+        const n = noteLines(r).length; more.textContent = open ? 'Hide the notes' : n ? `Read the notes (${plural(n, 'line')})` : 'More about this version';
+        if (open) openNotes.add(r.id); else openNotes.delete(r.id); };
       const no = $('.no', li), form = $('.why', li);
       no.onclick = () => { const open = form.hidden; form.hidden = !open; no.setAttribute('aria-expanded', String(open)); if (open) $('input:checked', form).focus(); };
       $('.keep', form).onclick = () => { form.hidden = true; no.setAttribute('aria-expanded', 'false'); no.focus(); };
