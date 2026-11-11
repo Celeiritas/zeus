@@ -41,7 +41,10 @@
 .throne .tablet.old{border-top-color:var(--line)}
 .throne .olds{font-size:var(--fs-sec);font-weight:600;color:var(--snow)}
 /* the notes, folded: one control opens them; markdown became plain styled text (no raw marks) */
-.throne .more{justify-self:start;color:var(--powder)}
+.throne .more,.throne .other{justify-self:start;color:var(--powder)}
+/* Deployed now: what runs, in words; each action with its sentence under it */
+.throne .now{font-size:var(--fs-body);color:var(--snow)}
+.throne .act{display:grid;gap:var(--s1);justify-items:start}
 .throne .fold{display:grid;gap:var(--s2);border-top:1px solid var(--line);padding-top:var(--s3)}
 .throne .fold[hidden]{display:none}
 .throne a.commit{display:inline-flex;align-items:center;min-height:var(--hit);font-size:var(--fs-sec)}

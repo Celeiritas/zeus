@@ -17,7 +17,7 @@ leafy.register('throne', (() => {
   const FILTERS = [['all', 'All'], ['waiting', 'Waiting'], ['expired', 'Expired'], ['failed', 'Failed']];
   const FAILED = ['failed', 'rolled-back', 'refused'];
   let A = null, ROOT = null, S = null, filter = 'all', timer = 0, said = '', heard = '', stale = false, askedOpen = false;
-  const openLogs = new Set(), openNotes = new Set();   // what the reader unfolded stays unfolded across redraws
+  const openLogs = new Set(), openNotes = new Set(), openOther = new Set();   // what the reader unfolded stays unfolded across redraws
   const $ = (s, el = ROOT) => el.querySelector(s), $$ = (s, el = ROOT) => [...el.querySelectorAll(s)];
   const e = s => A.esc(String(s ?? ''));
   const name = r => String(r.repo || '').split('/').pop();
@@ -129,14 +129,28 @@ leafy.register('throne', (() => {
       <p class="meta">There is no Cancel: half a deploy is worse than a whole one. If it fails after the install, Zeus puts back what ran before.</p>
     </li>`;
   }
+  // Deployed now, in words: what runs (when the program answers), and only when Zeus's own record differs, one sentence on
+  // how. Roll back keeps its hold and says what it puts in place of what; when the record differs from what runs, its
+  // target is older than a person would expect, so it sits folded behind "Other actions". One Check main again per program.
+  const DRIFT = {newer: own => `Zeus's own last deploy was ${own}; the newer version was installed by hand.`,
+    older: own => `Zeus's own last deploy was ${own}; an older version runs instead.`,
+    'no-record': () => 'Zeus has not deployed it yet; this version was installed by hand.'};
   function liveRow(d) {
-    const l = d.deployed, p = d.previous, k = d.repo.split('/').pop();
+    const l = d.deployed, p = d.previous, k = e(name(d)), id = e(d.repo.replace('/', '--')), run = runs(d);
+    const odd = d.drift in DRIFT, open = openOther.has(d.repo);
+    const who = l && l.approval && l.approval.user ? `, approved${by(l.approval)}` : '';
+    const back = p ? `<div class="act"><button type="button" class="back" data-sha="${e(p.sha)}" aria-describedby="rb-${id}">Roll back to ${e(ver(p))}</button>
+        <p class="meta" id="rb-${id}">Zeus puts ${e(ver(p))} back in place of ${e(run || ver(l || {}))}, then checks that it works.</p></div>` : '';
     return `<li class="live" data-repo="${e(d.repo)}">
-      <h4>${e(k)}</h4>
-      ${l ? `<p><b>${e(ver(l))}</b> <span class="meta">(${commit({...l, repo: d.repo})}) since ${e(ago(l.at))}${by(l.approval)}</span></p>` : '<p class="meta">Nothing deployed by Zeus yet.</p>'}
-      <div class="acts">${p ? `<button type="button" class="back" data-sha="${e(p.sha)}">Roll back to ${e(ver(p))}</button>` : ''}
-        ${staged(d) ? '' : `<button type="button" class="re" data-repo="${e(d.repo)}">Check main again</button>`}</div>
-      ${staged(d) ? '<p class="meta">A new version comes from a pack staged by its session.</p>' : ''}
+      <h4>${k}</h4>
+      ${run ? `<p class="now">Runs now: <b>${e(run)}</b></p>` : l ? `<p class="now">Last deployed by Zeus: <b>${e(ver(l))}</b></p>` : ''}
+      ${odd ? `<p class="meta">${e(DRIFT[d.drift](l ? ver(l) : ''))}</p>`
+        : l ? `<p class="meta">Zeus deployed it ${e(ago(l.at))}${who}.</p>` : run ? '' : '<p class="meta">Nothing deployed by Zeus yet.</p>'}
+      ${staged(d) ? '<p class="meta">A new version comes from a pack staged by its session.</p>'
+        : `<div class="act"><button type="button" class="re" data-repo="${e(d.repo)}" aria-describedby="re-${id}">Check main again</button>
+        <p class="meta" id="re-${id}">Looks for a newer version. Installs nothing.</p></div>`}
+      ${back && odd ? `<button type="button" class="other" aria-expanded="${open}" aria-controls="other-${id}">${open ? 'Hide other actions' : 'Other actions'}</button>
+        <div class="fold" id="other-${id}"${open ? '' : ' hidden'}>${back}</div>` : back}
       ${l && !p ? '<p class="meta">Nothing earlier to roll back to.</p>' : ''}
     </li>`;
   }
@@ -223,8 +237,10 @@ leafy.register('throne', (() => {
         ask('decline', {id: r.id, reason: why}, `Declined ${name(r)} ${ver(r)} (${why}). Nothing was deployed.`, li, x => A.fx.pieces(x)); };
     });
     $$('.live').forEach(li => {
+      const d = S.deployed.find(x => x.repo === li.dataset.repo), other = $('.other', li);
+      if (other) other.onclick = () => { const box = $('.fold', li), open = box.hidden; box.hidden = !open; other.setAttribute('aria-expanded', String(open));
+        other.textContent = open ? 'Hide other actions' : 'Other actions'; if (open) openOther.add(d.repo); else openOther.delete(d.repo); };
       const b = $('.back', li); if (!b) return;
-      const d = S.deployed.find(x => x.repo === li.dataset.repo);
       A.holdConfirm(b, () => ask('rollback', {repo: d.repo, sha: b.dataset.sha}, `Rolling ${name(d)} back to ${ver(d.previous)}.`, li, x => A.fx.bolt(x)));
     });
     $$('button.re').forEach(b => b.onclick = () => { b.disabled = true; ask('recheck', {repo: b.dataset.repo}, `Zeus checked main of ${b.dataset.repo.split('/').pop()}.`); });
