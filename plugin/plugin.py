@@ -1,7 +1,9 @@
 """Zeus · Throne, the Elaia server plugin `throne` (docs/design.md §9, docs/contract.md).
 
 Reads are file reads under Zeus's data folder (queue/, queue/.done/, state/, log/) and change nothing: a waiting
-request past its expiry is shown as expired, and Zeus marks it so himself when he next reads the queue. The decision
+request past its expiry is shown as expired, and Zeus marks it so himself when he next reads the queue. Since 0.7.0 a
+read also asks each repository's `health.http` address on 127.0.0.1 which version really runs (`running_version()`:
+GET only, 1 s, kept 30 s), so the page never calls an older record "live"; a write never asks. The decision
 inbox (queue/ask-*.json, docs/design.md §14) is read the same way: open asks under "Needs your answer", and a tap on an
 option runs `zeus answer <id> --index <n>`. Every write
 runs the zeus command with fixed arguments and returns what Zeus said; Zeus (and Janus behind him) decides. The plugin
@@ -11,7 +13,10 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,6 +36,15 @@ MARKS = (("fetch", ("zeus: ",)), ("checkout", ("checked out ", "pack checked: ")
 HISTORY = 60          # rows the page gets; everything stays in queue/.done/
 ASKED = 10            # answered and expired asks the page gets; every record stays in queue/
 TAIL = 80             # log lines the page gets
+# What really runs (0.7.0): a repository whose health is { "http": ... } is asked for its JSON `version`. Only this machine
+# (the literal address 127.0.0.1, so no name lookup and no proxy), GET only, no redirect followed, 1 s in all, 64 KB at most,
+# the answer kept 30 s. Any failure is "unknown", never an error on the page. post() never asks.
+HEALTH_URL = re.compile(r"^http://127\.0\.0\.1:(\d{1,5})(/[!-~]*)?$")
+VERSION_TEXT = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]{0,39}$")
+VERSION_NUM = re.compile(r"^\d{1,9}(\.\d{1,9}){0,3}$")
+ASK_S, KEEP_S, MAX_READ = 1.0, 30.0, 64 * 1024
+_kept, _kept_lock = {}, threading.Lock()
+_tick = time.monotonic   # the clock of the 30 s keep (tests replace it)
 
 
 def data():
@@ -133,15 +147,105 @@ def stages(rec, lines):
     return out
 
 
+def _ask_version(url):
+    """GET one health address on this machine and return its JSON `version`, or None for anything else.
+
+    A plain socket to the literal address 127.0.0.1 (re-checked here; the file is not trusted): no name lookup, no proxy
+    from the environment, no redirect (only a 200 counts), one fixed request line, 1 s for everything, 64 KB at most.
+    Elaia's server is threaded, so asking her own health address from inside her request handler cannot block her."""
+    m = HEALTH_URL.match(url) if isinstance(url, str) else None
+    if not m or not 1 <= int(m.group(1)) <= 65535:
+        return None
+    port, path = int(m.group(1)), m.group(2) or "/"
+    end, raw = time.monotonic() + ASK_S, b""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=ASK_S) as s:
+            s.sendall(("GET %s HTTP/1.0\r\nHost: 127.0.0.1:%d\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
+                       % (path, port)).encode("ascii"))
+            while True:
+                left = end - time.monotonic()
+                if left <= 0:
+                    return None
+                s.settimeout(left)
+                chunk = s.recv(16384)
+                if not chunk:
+                    break
+                raw += chunk
+                if len(raw) > MAX_READ:
+                    return None
+    except (OSError, ValueError, UnicodeError):
+        return None
+    head, sep, body = raw.partition(b"\r\n\r\n")
+    status = head.split(b"\r\n", 1)[0].split()
+    if not sep or len(status) < 2 or not status[0].startswith(b"HTTP/") or status[1] != b"200":
+        return None
+    if any(h.lower().startswith(b"transfer-encoding:") for h in head.split(b"\r\n")[1:]):
+        return None
+    try:
+        doc = json.loads(body.decode("utf-8"))
+    except (UnicodeError, ValueError):
+        return None
+    v = doc.get("version") if isinstance(doc, dict) else None
+    return v if isinstance(v, str) and VERSION_TEXT.match(v) else None
+
+
+def running_version(url):
+    """The version a health address answers, kept 30 s per address (a failure too, so a dead program costs 1 s per 30 s)."""
+    with _kept_lock:
+        hit = _kept.get(url)
+        if hit and _tick() - hit[0] < KEEP_S:
+            return hit[1]
+    v = _ask_version(url)
+    with _kept_lock:
+        _kept[url] = (_tick(), v)
+    return v
+
+
+def vtuple(v):
+    """'4.36.0' -> (4, 36, 0, 0); anything that is not numbers and dots -> None."""
+    if not isinstance(v, str) or not VERSION_NUM.match(v):
+        return None
+    n = [int(x) for x in v.split(".")]
+    return tuple(n + [0] * (4 - len(n)))
+
+
+def drift(running, deployed):
+    """How what runs compares with Zeus's own last deploy: same, newer, older, no-record (something runs, Zeus has no
+    record) or unknown (nothing answered, or a version that is not numbers)."""
+    if not running:
+        return "unknown"
+    if not deployed:
+        return "no-record"
+    a, b = vtuple(running.get("version")), vtuple(deployed.get("version"))
+    if a is None or b is None:
+        return "unknown"
+    return "same" if a == b else "newer" if a > b else "older"
+
+
 def deployed_now():
-    """Per repository: what runs (state/<owner>--<name>.json `deployed`) and what a rollback would put back (`previous`)."""
+    """Per repository: Zeus's own record (state/<owner>--<name>.json `deployed`), what a rollback would put back
+    (`previous`), and (0.7.0) what really answers now (`running`) with how the two compare (`drift`)."""
     out, kind = [], kinds()
+    repos = _config().get("repos")
+    repos = repos if isinstance(repos, dict) else {}
     for key in repo_keys():
         st = _read(data() / "state" / (key.replace("/", "--") + ".json")) or {}
         live = st.get("deployed") if isinstance(st.get("deployed"), dict) else None
         prev = st.get("previous") if isinstance(st.get("previous"), dict) else None
-        out.append({"repo": key, "kind": kind.get(key, "git"), "deployed": live, "previous": prev})
+        health = repos.get(key, {}).get("health") if isinstance(repos.get(key), dict) else None
+        url = health.get("http") if isinstance(health, dict) else None
+        v = running_version(url) if isinstance(url, str) and HEALTH_URL.match(url) else None
+        run = {"version": v} if v else None
+        out.append({"repo": key, "kind": kind.get(key, "git"), "deployed": live, "previous": prev,
+                    "running": run, "drift": drift(run, live)})
     return out
+
+
+def is_stale(rec, live):
+    """A waiting request whose version is not newer than what runs now: it needs nobody, it expires by itself."""
+    run = next((d["running"] for d in live if d["repo"] == rec.get("repo") and d.get("running")), None)
+    a, b = vtuple(rec.get("version")), vtuple(run.get("version")) if run else None
+    return a is not None and b is not None and a <= b
 
 
 def alert():
@@ -202,27 +306,48 @@ def snapshot(now=None):
             deploying.append(dict(rec, stages=stages(rec, lines), tail=lines))
     history = expired + [dict(r, has_log=log_path(r["id"]).is_file()) for r in done if r.get("state") not in RUNNING]
     live = deployed_now()
+    waiting = [dict(r, stale=is_stale(r, live)) for r in waiting]
     opened, asked = asks(now)
-    return {"at": now.isoformat(timespec="seconds"), "line": status_line(waiting, live, opened),
+    return {"at": now.isoformat(timespec="seconds"), "line": status_line(waiting, live, opened, now),
             "asks": opened, "asked": asked,
             "waiting": waiting, "deploying": deploying, "deployed": live, "history": history[:HISTORY], "alert": alert()}
 
 
-def status_line(waiting, live, opened=()):
-    n, q = len(waiting), len(opened)
+def _day(iso, now):
+    t = _when(iso)
+    if not t:
+        return "soon"
+    t = t.astimezone(now.tzinfo) if now.tzinfo else t
+    return "today" if t.date() == now.date() else ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")[t.weekday()]
+
+
+def status_line(waiting, live, opened=(), now=None):
+    """One sentence: questions, deploys that need a yes, old requests (not newer than what runs; they expire by
+    themselves), and per repository the version that runs ("running") or, when nothing answers, Zeus's last deploy."""
+    now = now or datetime.now(timezone.utc).astimezone()
+    old = [r for r in waiting if r.get("stale")]
+    n, q = len(waiting) - len(old), len(opened)
     parts = ["%d question%s for you" % (q, "" if q == 1 else "s")] if q else []
     parts.append("%d deploy%s waiting" % (n, "" if n == 1 else "s") if n else "Nothing waiting" if not q else "no deploys waiting")
+    if len(old) == 1:
+        parts.append("1 old request, expires %s" % _day(old[0].get("expires"), now))
+    elif old:
+        parts.append("%d old requests, expire by %s" % (len(old), _day(max((str(r.get("expires") or "") for r in old)), now)))
     for d in live:
-        if d["deployed"]:
-            parts.append("%s %s live" % (d["repo"].split("/")[-1], d["deployed"].get("version") or str(d["deployed"].get("sha") or "")[:7]))
+        k = d["repo"].split("/")[-1]
+        if d.get("running"):
+            parts.append("%s %s running" % (k, d["running"]["version"]))
+        elif d["deployed"]:
+            parts.append("%s %s deployed" % (k, d["deployed"].get("version") or str(d["deployed"].get("sha") or "")[:7]))
     return " · ".join(parts)
 
 
 def home_status():
     """Elaia's Home (status v2): the line, and "needs you" with a verb-first button while something waits. Open asks
-    count too: a question waiting for an answer needs the owner as much as a deploy waiting for a yes."""
+    count too: a question waiting for an answer needs the owner as much as a deploy waiting for a yes. An old request
+    (stale: not newer than what runs) needs nobody and is not counted."""
     s = snapshot()
-    w = [r for r in s["waiting"] if r.get("state") == "pending"]
+    w = [r for r in s["waiting"] if r.get("state") == "pending" and not r.get("stale")]
     q = len(s["asks"])
     if q and w:
         action = "Answer %d, review %d" % (q, len(w))
@@ -239,8 +364,9 @@ def home_status():
 def summary():
     """GET api/throne/summary: the counts Elaia's Home (or any page) can show without reading the whole Throne."""
     s = snapshot()
-    deploys = len([r for r in s["waiting"] if r.get("state") == "pending"])
-    return {"asks": len(s["asks"]), "deploys": deploys, "needs_you": len(s["asks"]) + deploys, "line": s["line"]}
+    deploys = len([r for r in s["waiting"] if r.get("state") == "pending" and not r.get("stale")])
+    return {"asks": len(s["asks"]), "deploys": deploys, "needs_you": len(s["asks"]) + deploys, "line": s["line"],
+            "stale": len([r for r in s["waiting"] if r.get("stale")])}
 
 
 # ---- Elaia's entry points --------------------------------------------------------------------------------------------

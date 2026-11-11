@@ -1,12 +1,16 @@
 """The Throne plugin's Python side (plugin/plugin.py, docs/design.md §9): reads are file reads that change nothing, every
 write runs zeus with fixed arguments (never a shell), and the plugin never decides. The page itself is tested in a browser
 (tests/throne/throne.test.js, run under Elaia by the throne-page CI job)."""
+import http.server
 import importlib.util
 import json
 import os
 import shutil
+import socket
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -111,7 +115,7 @@ class ThronePluginTest(unittest.TestCase):
         d = s["deployed"][0]
         self.assertEqual((d["deployed"]["version"], d["previous"]["version"]), ("4.9.0", "4.8.0"))
         self.assertIsNone(s["deployed"][1]["deployed"])
-        self.assertEqual(s["line"], "Nothing waiting · argus-ui 4.9.0 live")
+        self.assertEqual(s["line"], "Nothing waiting · argus-ui 4.9.0 deployed", "no health address answers: Zeus's record, never \"live\"")
 
     def test_history_marks_logs_and_alert(self):
         rid = "20261021-090000-argus-ui-aaaaaaa"
@@ -236,7 +240,7 @@ class ThronePluginTest(unittest.TestCase):
         self.assertEqual(json.loads(json.dumps(doc))["asks"][0]["title"], hostile, "the page gets the text as it was asked")
 
     def test_home_status_and_summary_count_asks(self):
-        self.assertEqual(self.p.get("summary", {}, Ctx()), (200, {"asks": 0, "deploys": 0, "needs_you": 0, "line": "Nothing waiting"}))
+        self.assertEqual(self.p.get("summary", {}, Ctx()), (200, {"asks": 0, "deploys": 0, "needs_you": 0, "line": "Nothing waiting", "stale": 0}))
         self.ask("ask-20261109-080000-zeus")
         self.assertEqual(self.p.get("status", {}, Ctx())[1], {"line": "1 question for you · no deploys waiting", "needs": True,
                                                               "action": "Answer 1 question", "count": 1})
@@ -245,7 +249,7 @@ class ThronePluginTest(unittest.TestCase):
         st = self.p.get("status", {}, Ctx())[1]
         self.assertEqual((st["needs"], st["action"], st["count"]), (True, "Answer 2, review 1", 3))
         self.assertEqual(self.p.get("summary", {}, Ctx())[1], {"asks": 2, "deploys": 1, "needs_you": 3,
-                                                               "line": "2 questions for you · 1 deploy waiting"})
+                                                               "line": "2 questions for you · 1 deploy waiting", "stale": 0})
 
     def test_answer_runs_zeus_with_the_option_number_and_who(self):
         aid = "ask-20261109-080000-zeus"
@@ -265,6 +269,176 @@ class ThronePluginTest(unittest.TestCase):
                      {"id": aid + " --index 1", "index": 1}):
             code, doc, seen = self.call("answer", body)
             self.assertEqual((code, seen), (400, {}), body)
+
+    # ---- what really runs (0.7.0): running, drift, stale requests ----
+    def health_server(self, answer):
+        """A tiny HTTP server on a free port of 127.0.0.1 for this test only. answer(path) -> (status, headers, body) or
+        a number of seconds to sleep before answering. Returns (port, list of paths asked)."""
+        asked = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                asked.append(self.path)
+                a = answer(self.path)
+                if isinstance(a, (int, float)):
+                    time.sleep(a)
+                    a = (200, {}, b'{"version": "9.9.9"}')
+                code, headers, body = a
+                self.send_response(code)
+                for k, v in headers.items():
+                    self.send_header(k, v)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                try:
+                    self.wfile.write(body)
+                except OSError:
+                    pass
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        srv.daemon_threads = True
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        return srv.server_address[1], asked
+
+    def config(self, health):
+        repos = {"you/argus-ui": {"health": health} if health else {}, "you/hermes": {}}
+        Path(os.environ["ZEUS_CONFIG"]).write_text(json.dumps({"version": 1, "repos": repos}), encoding="utf-8")
+
+    def state(self, version, prev="4.32.0"):
+        (self.data / "state" / "you--argus-ui.json").write_text(json.dumps({"repo": "you/argus-ui",
+            "deployed": {"sha": SHA, "version": version, "at": stamp(self.now)}, "previous": {"sha": PREV, "version": prev}}), encoding="utf-8")
+
+    def runs(self, version=None, body=None, state=True):
+        """argus-ui's health answers `version` (or the raw `body`); returns the argus-ui row of `deployed`."""
+        self.p = load_plugin()
+        port, asked = self.health_server(lambda path: (200, {"Content-Type": "application/json"},
+                                                       body if body is not None else json.dumps({"ok": True, "version": version}).encode()))
+        self.config({"http": "http://127.0.0.1:%d/api/health" % port})
+        if state:
+            self.state("4.33.0")
+        else:
+            (self.data / "state" / "you--argus-ui.json").unlink(missing_ok=True)
+        return self.p.snapshot(self.now)["deployed"][0], asked
+
+    def test_running_and_drift(self):
+        for version, drift in (("4.33.0", "same"), ("4.36.0", "newer"), ("4.30.1", "older"), ("4.33", "same"), ("4.36.0-rc1", "unknown")):
+            d, asked = self.runs(version)
+            self.assertEqual((d["running"], d["drift"]), ({"version": version}, drift), version)
+            self.assertEqual(asked, ["/api/health"], "GET of the configured path, once")
+        d, _ = self.runs("4.36.0", state=False)
+        self.assertEqual((d["running"], d["drift"], d["deployed"]), ({"version": "4.36.0"}, "no-record", None))
+        for body in (b"<html>not json</html>", b'["4.36.0"]', b'{"version": 436}', b'{"version": "<b>4</b>"}', b'{"ok": true}', b""):
+            d, _ = self.runs(body=body)
+            self.assertEqual((d["running"], d["drift"]), (None, "unknown"), body)
+        hermes = self.p.snapshot(self.now)["deployed"][1]
+        self.assertEqual((hermes["running"], hermes["drift"]), (None, "unknown"), "no http health: nothing is asked")
+
+    def test_a_slow_or_refused_or_huge_answer_is_unknown(self):
+        self.state("4.33.0")
+        port, _ = self.health_server(lambda path: 3)
+        self.config({"http": "http://127.0.0.1:%d/" % port})
+        t0 = time.monotonic()
+        d = self.p.snapshot(self.now)["deployed"][0]
+        self.assertLess(time.monotonic() - t0, 2.0, "1 s in all, then unknown")
+        self.assertEqual((d["running"], d["drift"]), (None, "unknown"))
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        closed = s.getsockname()[1]
+        s.close()                                                   # nothing listens there now: refused
+        self.p = load_plugin()
+        self.config({"http": "http://127.0.0.1:%d/api/health" % closed})
+        self.assertEqual(self.p.snapshot(self.now)["deployed"][0]["drift"], "unknown")
+        self.p = load_plugin()
+        port, _ = self.health_server(lambda path: (200, {}, b'{"version": "4.36.0", "pad": "' + b"x" * 70000 + b'"}'))
+        self.config({"http": "http://127.0.0.1:%d/" % port})
+        self.assertIsNone(self.p.snapshot(self.now)["deployed"][0]["running"], "more than 64 KB is not read")
+
+    def test_only_127_0_0_1_is_ever_asked(self):
+        port, asked = self.health_server(lambda path: (200, {}, b'{"version": "4.36.0"}'))
+        calls = []
+        real = socket.create_connection
+        for url in ("http://localhost:%d/" % port, "http://127.0.0.2:%d/" % port, "https://127.0.0.1:%d/" % port,
+                    "http://127.0.0.1:%d@192.0.2.1/" % port, "http://192.0.2.1:%d/" % port, "http://[::1]:%d/" % port,
+                    "http://127.0.0.1/", "http://127.0.0.1:99999/", "http://127.0.0.1:%d/a b" % port, "ftp://127.0.0.1:%d/" % port):
+            self.p = load_plugin()
+            self.config({"http": url})
+            with mock.patch.object(self.p.socket, "create_connection", lambda *a, **kw: calls.append(a) or real(*a, **kw)):
+                d = self.p.snapshot(self.now)["deployed"][0]
+            self.assertEqual((d["running"], d["drift"]), (None, "unknown"), url)
+        self.assertEqual((calls, asked), ([], []), "no connection is opened for an address that is not 127.0.0.1")
+
+    def test_a_redirect_is_not_followed(self):
+        port2, asked2 = self.health_server(lambda path: (200, {}, b'{"version": "4.36.0"}'))
+        port, asked = self.health_server(lambda path: (302, {"Location": "http://127.0.0.1:%d/api/health" % port2}, b""))
+        self.config({"http": "http://127.0.0.1:%d/api/health" % port})
+        self.state("4.33.0")
+        d = self.p.snapshot(self.now)["deployed"][0]
+        self.assertEqual((d["running"], d["drift"], asked, asked2), (None, "unknown", ["/api/health"], []))
+
+    def test_the_answer_is_kept_30_seconds(self):
+        clock = [1000.0]
+        self.p._tick = lambda: clock[0]
+        answer = {"v": "4.36.0"}
+        port, asked = self.health_server(lambda path: (200, {}, json.dumps({"version": answer["v"]}).encode()))
+        self.config({"http": "http://127.0.0.1:%d/api/health" % port})
+        self.state("4.33.0")
+        self.assertEqual(self.p.snapshot(self.now)["deployed"][0]["running"], {"version": "4.36.0"})
+        answer["v"] = "4.37.0"
+        clock[0] += 29
+        self.assertEqual(self.p.snapshot(self.now)["deployed"][0]["running"], {"version": "4.36.0"}, "kept")
+        self.assertEqual(len(asked), 1)
+        clock[0] += 2
+        self.assertEqual(self.p.snapshot(self.now)["deployed"][0]["running"], {"version": "4.37.0"}, "asked again after 30 s")
+        self.assertEqual(len(asked), 2)
+
+    def test_a_request_older_than_what_runs_is_stale_and_needs_nobody(self):
+        port, _ = self.health_server(lambda path: (200, {}, b'{"version": "4.36.0"}'))
+        self.config({"http": "http://127.0.0.1:%d/api/health" % port})
+        self.state("4.33.0")
+        fri = self.now + timedelta(days=2)
+        self.rec("20261021-090000-argus-ui-aaaaaaa", version="4.33.0", expires=stamp(fri))
+        before = (self.data / "queue" / "20261021-090000-argus-ui-aaaaaaa.json").read_bytes()
+        s = self.p.snapshot(self.now)
+        self.assertEqual([r["stale"] for r in s["waiting"]], [True])
+        day = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")[fri.weekday()]
+        self.assertEqual(s["line"], "Nothing waiting · 1 old request, expires %s · argus-ui 4.36.0 running" % day)
+        self.assertNotIn(" live", s["line"])
+        self.assertEqual(self.p.get("status", {}, Ctx())[1], {"line": s["line"], "needs": False, "action": "", "count": 0})
+        self.assertEqual(self.p.get("summary", {}, Ctx())[1], {"asks": 0, "deploys": 0, "needs_you": 0, "line": s["line"], "stale": 1})
+        self.assertEqual((self.data / "queue" / "20261021-090000-argus-ui-aaaaaaa.json").read_bytes(), before, "a read writes nothing")
+        # a newer one arrives: it needs him; the old one still does not count
+        self.rec("20261022-090000-argus-ui-aaaaaab", version="4.37.0")
+        self.rec("20261022-090001-argus-ui-aaaaaac", version="4.36.0", expires=stamp(self.now + timedelta(hours=1)))
+        s = self.p.snapshot(self.now)
+        self.assertEqual([(r["version"], r["stale"]) for r in s["waiting"]], [("4.36.0", True), ("4.37.0", False), ("4.33.0", True)])
+        self.assertEqual(s["line"], "1 deploy waiting · 2 old requests, expire by %s · argus-ui 4.36.0 running" % day)
+        st = self.p.get("status", {}, Ctx())[1]
+        self.assertEqual((st["needs"], st["action"], st["count"]), (True, "Review argus-ui 4.37.0", 1))
+        self.assertEqual(self.p.get("summary", {}, Ctx())[1]["deploys"], 1)
+
+    def test_without_an_answer_nothing_is_stale_and_the_old_keys_keep_their_meaning(self):
+        self.state("4.33.0")
+        self.rec("20261021-090000-argus-ui-aaaaaaa", version="4.30.0")
+        s = self.p.snapshot(self.now)
+        self.assertEqual([r["stale"] for r in s["waiting"]], [False], "unknown is never stale: Zeus's record is not what runs")
+        self.assertEqual(s["line"], "1 deploy waiting · argus-ui 4.33.0 deployed")
+        d = s["deployed"][0]
+        self.assertEqual((d["repo"], d["kind"], d["deployed"]["version"], d["previous"]["version"], d["running"], d["drift"]),
+                         ("you/argus-ui", "git", "4.33.0", "4.32.0", None, "unknown"))
+        for k in ("at", "line", "asks", "asked", "waiting", "deploying", "deployed", "history", "alert"):
+            self.assertIn(k, s)
+        self.assertEqual(set(self.p.summary()) - {"stale"}, {"asks", "deploys", "needs_you", "line"})
+
+    def test_a_write_never_asks_what_runs(self):
+        self.config({"http": "http://127.0.0.1:1/api/health"})
+        with mock.patch.object(self.p, "_ask_version", side_effect=AssertionError("post() asked a health address")):
+            for path, body in (("approve", {"id": "20261021-090000-argus-ui-aaaaaaa", "sha": SHA}), ("rollback", {"repo": "you/argus-ui", "sha": PREV}),
+                               ("decline", {"id": "20261021-090000-argus-ui-aaaaaaa", "reason": "not-now"}), ("recheck", {"repo": "you/argus-ui"}), ("seen", {})):
+                self.assertEqual(self.call(path, body)[0], 200, path)
 
     def test_manifest(self):
         m = json.loads((R / "plugin" / "plugin.json").read_text(encoding="utf-8"))

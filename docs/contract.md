@@ -69,7 +69,14 @@ The whole design is `docs/design.md` §15. What crosses the border:
 - **The signed approval line** gains `"kind": "staged-pack"` and `"pack": { "sha256", "size" }`; `deploy-run` installs only a pack whose sha256 is the signed one.
 - **`state/<owner>--<name>.json`** entries of a staged-pack repository carry `"pack": "<sha256>"`.
 - **The install script** gets `install <Zeus's copy> <version> <sha>` or `rollback <version> <sha>` and `ZEUS_ID`, `ZEUS_SHA`, `ZEUS_VERSION`, `ZEUS_PREVIOUS`, `ZEUS_PREVIOUS_VERSION`, `ZEUS_PACK_FILES`, `ZEUS_PACK_SHA256`; it prints `ZEUS_STAGE=install` before its first change (§4a's table applies unchanged).
-- The Throne's `GET api/throne` passes the records as they are (with `kind`, `pack`, `tests`), and each `deployed` row gains `"kind": "git" | "staged-pack"` from `repos.json`, for the wording only.
+- The Throne's `GET api/throne` passes the records as they are (with `kind`, `pack`, `tests`), and each `deployed` row gains `"kind": "git" | "staged-pack"` from `repos.json`, for the wording only (and, since 0.7.0, `running` and `drift`: §3c).
+
+## 3c. What really runs (0.7.0): `running`, `drift`, `stale`
+Zeus's own record (§4a) says what *he* deployed last. A version installed some other way (by hand, allowed) leaves that record behind, so the Throne also asks the program itself. New keys only; every old key keeps its meaning.
+- **`GET api/throne` → each row of `deployed`** gains `"running": { "version": "4.36.0" } | null` and `"drift": "same" | "newer" | "older" | "no-record" | "unknown"`. `running` comes from the repository's `health.http` address in `repos.json` (an address that starts with `http://127.0.0.1:`, re-checked by the plugin), asked with one GET, no redirect followed, 1 second in all, at most 64 KB read, the JSON answer's `version` (numbers, letters, `.`, `+`, `-`; 40 characters at most), kept 30 seconds. Anything else (another address, no answer, a redirect, not JSON, no `version`) is `null`. `drift` compares `running` with `deployed.version` as numbers (`4.33` equals `4.33.0`): `newer` = what runs is newer than Zeus's last deploy; `no-record` = something answers and Zeus has no record; `unknown` = nothing answered or a version is not plain numbers. A POST never asks.
+- **Each record in `waiting`** gains `"stale": true | false`: true when its version is not newer than `running` of its repository (both plain numbers). A stale request needs nobody: it is left out of `summary.deploys`, `summary.needs_you` and `status.needs`/`count`/`action`, the page offers no Deploy for it, and it expires by itself. Zeus himself does not know the word: `zeus approve` would still accept it until it expires (§6, unchanged).
+- **`line`** names what runs when it is known (`argus-ui 4.36.0 running`) and otherwise Zeus's last deploy (`argus-ui 4.33.0 deployed`; before 0.7.0 both read `… live`). Stale requests read `1 old request, expires Fri` (`2 old requests, expire by Fri`).
+- **`GET api/throne/summary`** gains `"stale": <waiting requests that are stale>`.
 
 ## 4a. What is live: `state/<owner>--<name>.json`
 Written by `zeus deploy-run` after a deploy passes its health check:
