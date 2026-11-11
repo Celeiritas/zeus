@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.1 – 2026-11-11
+Three notes from the re-check of 0.7.0, words and markup on the Throne only (Zeus, the hold and the three decision functions unchanged):
+- **A rollback in progress is not "a new version".** While Zeus rolls a program back, Deployed now said "Zeus is deploying a new version now."; it now says "Zeus is rolling it back now."
+- **A request with the same version number as what runs says why it is there:** "Same version number as what runs, a newer commit on main." (not on the very commit Zeus deployed last, which has its own sentence).
+- **Old requests, for a screen reader:** the card titles under the "Old requests" heading (h4) are now h5, one level below it; they look the same as before.
+- Tests: `tests/throne/throne.test.js` checks the rollback sentence, the equal-version line, and the h5 level with the same look; each fails on 0.7.0.
+
 ## 0.7.0 – 2026-11-11
 A new milestone: **the Throne readable on a phone**, for a tired person deciding a deploy on the first screen. Only the page and the read side of the plugin changed; Zeus, the hold, the identity check and "an approval is for one commit, once" are as they were.
 - **What really runs.** The page asked only Zeus's own record, so after versions were installed by hand it said "argus-ui 4.33.0 live" while 4.36.0 ran. The plugin now asks each repository's `health.http` address on 127.0.0.1 for its `version` (GET only, no redirect, 1 s, 64 KB, kept 30 s; any failure is "unknown"; never from a POST). Each Deployed now row gains `running` and `drift` (`docs/contract.md` §3c). The line says "argus-ui 4.36.0 running", or "… deployed" for Zeus's record when nothing answers; never "live".

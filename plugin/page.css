@@ -7,8 +7,8 @@
 .throne h3{margin:0 0 var(--s3);font-size:var(--fs-body);font-weight:600;color:var(--snow)}
 /* 0.7.0: three sizes (16, 14, 12) and two weights (400, 600) on the whole page */
 .throne b,.throne strong{font-weight:600}
-.throne h4{margin:0;font-size:var(--fs-body);font-weight:600;color:var(--snow);overflow-wrap:anywhere}
-.throne h4 b{color:var(--storm)}
+.throne h4,.throne h5{margin:0;font-size:var(--fs-body);font-weight:600;color:var(--snow);overflow-wrap:anywhere}
+.throne h4 b,.throne h5 b{color:var(--storm)}   /* h5: a card title under Old requests (one level below it), same look */
 .throne ul,.throne ol{list-style:none;margin:0;padding:0}
 .throne .meta{color:var(--powder);font-size:var(--fs-sec)}
 .throne p{margin:0}
