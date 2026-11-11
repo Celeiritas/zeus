@@ -155,3 +155,95 @@ It makes a request for the current `main` (or takes the one already waiting for 
 | `zeus ask --project P --title T --option A --option B [--context C] [--expires 3d] [--json]` | asked: the id (or the signed record) printed | no key | bad fields (all of them named) |
 | `zeus answer <id> <option>` / `zeus answer <id> --index N [--user L --ip A]` | answered, once | no such ask, not open (answered, expired), changed outside Zeus, no key | bad id, option or index; `--user`/`--ip` over ssh, or one without the other |
 | `zeus asks [<id>] [--open\|--all] [--project P] [--json]` | listed (a record changed outside Zeus is left out and named on stderr) | no key | usage |
+
+## 8. Root actions from the phone (design §16): records, results, the log line, the attention line
+**Status: designed, nothing built.** The whole design is `docs/design.md` §16 (tier R in §14). This section is what crosses the borders between the key page, the gate, the runner and the readers of root's log. Times are ISO 8601 with the server's offset. Placeholders in examples are filled in on the server. Where the private design names a fact but not yet a field, the text says "fixed in Z2" and the slice that builds it writes the shape here before it merges.
+
+**Never in the result file, the run log, `attention.jsonl`, the quarantine line, the journal or any file a normal-user process can read:** a key id or user handle (only the key ref: the first 16 hex digits of the SHA-256 of the key id), a secret, a home path. The ids do exist in the inbox record (8b), the gate's answers (8c) and `keys.json`, and only there; the inbox, `work/`, `quarantine/` and `keys.json` (root:`zeus-root-gate` 640) are not readable by the normal user. The owners' file has the same mode; `labels.json` (root 644) holds no ids. The full table of owners and modes is `docs/design.md` §16.3.
+
+### 8a. The list entry (`/etc/zeus-root/actions.json`, one entry; the real file is private, the repository carries an `.example`)
+```json
+{ "id": "close-media-lan", "kind": "change",
+  "title": "Close the media ports to the apartment network", "sheet": "Zeus · Close the media ports",
+  "button": "Close the 3 ports", "icon": "lock",
+  "changes": [["Jellyfin, Audiobookshelf, the downloader's page", "open on the apartment Wi-Fi and cable", "closed there"],
+              ["Through Tailscale (your phone, your PCs)", "", "no change"]],
+  "script": "close-media-lan-v2.sh", "sha256": "<64 hex>", "undo": "open-media-lan",
+  "game_check": true, "can_cut_you_off": true, "ask_hours": 24,
+  "max_per_day": 6, "min_gap_s": 120, "added": "zeus-root 1.0.0" }
+```
+| Field | Must be |
+|---|---|
+| `id` | the action's name; the only thing a page, a message or a record may name |
+| `kind` | `check` (changes nothing), `change`, or `put-back` (restores the state from before a change) |
+| `title`, `sheet`, `button`, `icon`, `changes` | the words of the key page and of Android's sheet; `changes` rows are `[what, before, after]` |
+| `script`, `sha256` | a file in `actions/` and its checksum; root re-hashes before every run |
+| `undo` | the id of the paired entry, or `null` (a restart: nothing to put back). `null` is accepted only with `can_cut_you_off: false` |
+| `game_check` | refuse the start while a game runs (and delay a put-back by at most `reach_game_max_s`, default 900) |
+| `can_cut_you_off` | true starts the reach check after a successful run |
+| `ask_hours` | for Zeus's ask only; root ignores it |
+| `max_per_day`, `min_gap_s` | the limits of design §16 (v1: 6 a day, 2 minutes apart) |
+
+### 8b. The record (what the gate writes into root's inbox, `/run/zeus-root/inbox/`)
+One file per approved try, written under a temporary name and renamed into place, at most 16 KB, one JSON object with exactly its keys and no repeated key. Root treats the inbox as hostile: every entry is moved out first, opened without following links and checked on the open handle before it is read.
+```json
+{ "type": "run", "action": "close-media-lan", "nonce": "<32 random bytes, base64url>", "exp": 1794000000,
+  "credentialId": "<b64url>", "clientDataJSON": "<b64url>", "authenticatorData": "<b64url>",
+  "signature": "<b64url>", "userHandle": "<b64url>",
+  "seen": { "login": "<login>", "node": "<phone device name>", "ip": "<address>" } }
+```
+- The five assertion fields (`credentialId`, `clientDataJSON`, `authenticatorData`, `signature`, `userHandle`) are what the phone returned (`finish` of the gate, whose sixth key is the nonce). `seen` is what the gate saw; root takes it as the gate's word, not as proof.
+- `type` is `run` for an action, `check-key` for the Self-test's check of one key (then also `"params": { "key": "<key ref>" }`, and the challenge's `action` is the string `"check-key"`; root accepts any registered key of the asking device for it and runs nothing), or `reach` for a check-in: `{ "type": "reach", "run": "<run id>", "seen": { … } }`.
+- Root recomputes the challenge from its own copy: SHA-256 of `zeus-root/v1\n` and the canonical JSON (keys sorted, no spaces, ASCII only) of `{ "action", "params", "list", "nonce", "exp", "origin" }`. `list` is the SHA-256 of the installed `actions.json`; `origin` is the key page's exact origin from `config.json`; `exp` is at most 180 s after issue.
+- Fixed in Z2: whether `action`, `nonce` and `exp` travel in the record itself or come from the gate's own state, and the exact key set of the `reach` record.
+
+### 8c. The gate's calls (the key page's `POST` requests, JSON, `Content-Type: application/json`)
+| Path | Request | Answer |
+|---|---|---|
+| `/api/begin` | `{ "action", "params"? }` (`params` only for `"action": "check-key"`, where it is `{ "key": "<key ref>" }`; otherwise absent or `{}`) | `{ "nonce", "exp", "list", "origin", "challenge", "rpId", "allowCredentials": [<this action's keys for the asking device>], "userVerification": "required", "timeout": 60000 }` |
+| `/api/finish` | `{ "nonce", "credentialId", "clientDataJSON", "authenticatorData", "signature", "userHandle" }` | `{ "run" }` (a repeat for the same nonce returns the same run and writes nothing) |
+| `/api/result` | `{ "run"? }` | the result of 8d plus the run log's `ZEUS_STEP=` lines; with no run, this device's run that is waiting for a check-in |
+| `/api/reach` | `{ "run" }` | the same answer as `result` |
+| `/api/history` | `{}` | the last 10 lines of the run log, without ids |
+| `/api/enrol` | the registration submission (only while root has a window open) | fixed in Z3 |
+Every answer carries `Content-Type: application/json`, `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`, and no `Access-Control-*` header. A refusal is one short JSON object `{ "ok": false, "msg": "<one sentence>" }` (the sentence's wording is fixed in Z3). Any method but `POST` gets 405.
+
+### 8d. The result (`/run/zeus-root/results/<run>.json`, root 644, no ids, no secrets)
+One file per run, rewritten as the run moves on. The design fixes these facts; the key set is fixed in Z2.
+- the run id, the action id and the times;
+- the state: running, `waiting for your phone` (a reach check is open; carries the deadline), `done`, `stopped` (before the change), `failed` (after it, with whether the undo ran and whether it worked), `undone` (put back by itself), `superseded`, or `refused` (with the reason);
+- for a refusal, a failure or a put-back, one plain sentence for the key page, written by root, not by the script. "Nothing ran" is said only when this file says so.
+The steps shown while it runs come from the script's own `ZEUS_STEP=<n>/<total> <sentence>` lines in `run-<id>.log` (world-readable, no key id); `ZEUS_STAGE=change` marks the point after which a failure runs the undo. Exit codes of a script: 0 done · 2 stopped before the change · 3 not as expected after it; any other non-zero exit before `ZEUS_STAGE=change` is `stopped` (nothing changed), and after it a failure that runs the undo once; an entry with no undo reports that the service did not come back.
+
+### 8e. The log line (`/var/log/zeus-root/runs-YYYY-MM.jsonl`, root 644)
+One JSON object per try, readable by everyone on `{{SERVER}}`, so it holds no key id, user id or secret:
+```json
+{ "t": "2026-11-12T08:05:11+00:00", "run": "<id>", "action": "close-media-lan", "outcome": "done",
+  "exit": 0, "secs": 4.2, "undo_ran": false, "reach": "kept",
+  "key": { "ref": "<first 16 hex of sha256(key id)>", "label": "phone", "device": "{{PHONE}}", "synced_claimed": true },
+  "uv": true, "seen": { "login": "<login>", "node": "<node>", "ip": "<address>" },
+  "assertion": { "clientDataJSON": "<b64url>", "authenticatorData": "<b64url>", "signature": "<b64url>" },
+  "challenge": "<hex>", "list": "<hex>", "zeus_root": "1.0.0", "prev": "<sha256 of the previous line>" }
+```
+| `outcome` | Meaning |
+|---|---|
+| `done` | the script ran and exited 0 |
+| `stopped` | it stopped before the change |
+| `failed` | it failed after the change; `undo_ran` says what followed |
+| `undone` | put back by itself, with a reason: no check-in · no check-in, after a restart · no check-in, after 15 minutes of game |
+| `superseded` | a pair's newer run replaced a waiting check |
+| `key-checked` | the Self-test's check of one key |
+| `refused` | with the reason and its class: **counted toward the pause** (bad signature, wrong origin, framed, UV missing, challenge mismatch); **not counted** (expired, used nonce); **garbage, counted apart** (unknown or revoked key, wrong device, malformed); **other** (counter, BE changed, list changed, file rules, Serve mapping changed, rate limit, paused, game running with the matching process named, busy) |
+- `reach` is `kept`, `undone` or absent. `prev` makes a hash chain: a changed or removed line shows.
+- **The whole assertion is kept**, so `zeus-root verify-log` re-checks every signature against the registered public keys (found by `key.ref`), not just the chain. Unlike Zeus's HMAC log (§4), only the phone could have made those signatures. The assertion holds neither the key id nor the user handle.
+- The quarantine writes one line per entry: its type, size, owner and the checksum of its first 16 KB.
+
+### 8f. The attention line (`/var/log/zeus-root/attention.jsonl`, root 644)
+One line for each of: a put-back by itself, a failed undo, a restart that did not come back, a pause, a quarantine flood, a refusal of the class counted toward the pause (8e), and the watcher unit failing. A refusal in the classes **garbage** or **not counted** never writes an attention line (that would let anyone who can send garbage make the phone buzz again and again); it goes to the log only, with one warning for the owner at 20 garbage records in an hour. **Open, decided in slice Z3:** whether the **other** class (counter, BE changed, list changed, file rules, Serve mapping changed, rate limit, paused) writes an attention line; the private design says both "a refusal other than game or busy" and, elsewhere, a shorter list. Until Z3 decides, build the narrower list above. Elaia's side turns each new line into one `broke` event: a buzz of the kind *Something stopped working*, and Argus glares. The words come from root, one sentence each, for example:
+- `Close the media ports was put back: your phone did not check in`
+- `Zeus refused 3 tries`
+- `Restart Bluetooth: the service did not come back up`
+A reminder at minute 5 of a waiting check-in is not an attention line; it is read from the result (8d) and raised as *Needs your yes: keep Close the media ports*, with a body ending *Open it to check in from this phone, or it is put back at 08:51*. Fixed in Z2: the key set of an attention line (at least a time, the run, a kind from the list above and the sentence) and the order of the buzz kinds. No key id, user id or secret appears in it.
+
+### 8g. Zeus's ask, tier R (`zeus root-ask <id>`, built in Z6)
+A tier R ask is a record like §3a's, with `kind` `root`, `tier` `"R"` and the entry's `title` copied from `/etc/zeus-root/actions.json`; Zeus refuses an id that is not in the list, and sets the expiry from the entry's `ask_hours`. It carries no path, command or script, and it can make nothing run: the yes is the owner's signature on the key page, verified by root. Fixed in Z6: the exact record and the Throne's reading of root's results and log.
