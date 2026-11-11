@@ -243,12 +243,22 @@ run(async b => {
   check(await card.locator('.notes a').count() === 0 && /link 4 stays words/.test(shownNotes) && await card.locator('.notes b').count() === 25 && await card.locator('.notes code').count() >= 50, 'bold and code are styled text; a link keeps its words and is no link');
   check((await card.locator('a.commit').boundingBox()).height >= 44, 'the commit link inside the fold is a 44 px target');
   if (process.env.SHOTS) await card.screenshot({path: path.join(process.env.SHOTS, 'card-412-notes-open.png')});
-  await more.click();
+  const less = card.locator('button.less');
+  const lb = await less.boundingBox(), lastNote = await card.locator('.notes > :last-child').boundingBox();
+  check(await less.isVisible() && await less.textContent() === 'Hide the notes' && lb.height >= 44 && lb.y > lastNote.y, 'long notes: a second Hide the notes at their end, 44 px');
+  await less.click();
+  check(await card.locator('.fold').isHidden() && await more.getAttribute('aria-expanded') === 'false' && await m.evaluate(() => document.activeElement.matches('.tablet button.more')),
+    'the Hide the notes at the end folds them and puts focus back on Read the notes');
 
   const old = m.locator(`.tablet[data-id="${OLD}"]`);
   check(/^\s*↓ Older than what runs now \(4\.36\.0\)/.test(await old.innerText()) && await old.locator('button.go, .hold').count() === 0 && await old.locator('button.no').count() === 1,
     'a stale card says first that it is older than what runs, and offers Decline only');
-  check(/To go back to an older version, use Roll back below/.test(await old.textContent()), 'a stale card points to Roll back');
+  check(!/Roll back below/.test(await old.textContent()), 'a stale card does not point at a Roll back that may be folded or go elsewhere');
+  const oldh = m.locator('section[aria-labelledby="t-wait"] .oldh');
+  check(await oldh.textContent() === 'Old requests' && await oldh.evaluate(h => { const c = getComputedStyle(h); return c.fontSize === '14px' && c.fontWeight === '600'; })
+    && await m.locator('#t-old + ul .tablet.old').count() === 1 && await oldh.evaluate((h, f) => !!(document.querySelector(`.tablet[data-id="${f}"]`).compareDocumentPosition(h) & Node.DOCUMENT_POSITION_FOLLOWING), FRESH),
+    'stale cards sit under their own small heading, Old requests (14 px, 600), after the cards that need a yes');
+  check(await m.locator('section[aria-labelledby="t-wait"] > ul.tablets:not([aria-labelledby]) .tablet', {hasText: 'It needs nothing from you'}).count() === 0, 'nothing among the cards that need a yes says it needs nothing');
   await old.scrollIntoViewIfNeeded();
   if (process.env.SHOTS) await old.screenshot({path: path.join(process.env.SHOTS, 'card-412-stale.png')});
   for (const bt of await old.locator('button:visible').all()) if (!/Decline/.test(await bt.textContent())) await bt.click();
@@ -256,7 +266,7 @@ run(async b => {
   check(!calls().slice(before).some(c => c[0] === 'approve'), 'nothing on a stale card sends approve');
 
   const lv = m.locator('.live[data-repo="you/argus-ui"]'), hv = m.locator('.live[data-repo="you/hermes"]');
-  check(/Runs now: 4\.36\.0/.test(await lv.textContent()) && /Zeus's own last deploy was 4\.33\.0; the newer version was installed by hand\./.test(await lv.textContent()), 'Deployed now: what runs, and one sentence because the record differs');
+  check(/Runs now: 4\.36\.0/.test(await lv.textContent()) && /Zeus's own last deploy was 4\.33\.0; the newer version was installed some other way\./.test(await lv.textContent()) && !/by hand/.test(await lv.textContent()), 'Deployed now: what runs, and one sentence because the record differs');
   check(await lv.locator('button.other').getAttribute('aria-expanded') === 'false' && await lv.locator('button.back').isHidden(), 'drift: Roll back sits folded behind Other actions');
   check(/Runs now: 0\.9\.0/.test(await hv.textContent()) && !/own last deploy/.test(await hv.textContent()) && await hv.locator('button.back').isVisible() && await hv.locator('button.other').count() === 0, 'no drift: no extra sentence, Roll back in view');
   check(/Zeus puts 0\.8\.0 back in place of 0\.9\.0, then checks that it works\./.test(await hv.textContent()), 'Roll back names its true target and what it replaces');
@@ -280,6 +290,14 @@ run(async b => {
   await m.locator('[data-f="waiting"]').click();
   check(/old request/.test(await m.locator('.hist .hrow', {hasText: '4.33.0'}).locator('.chip').textContent()) && /waiting/.test(await m.locator('.hist .hrow', {hasText: '4.37.0'}).locator('.chip').textContent()),
     'the Waiting filter marks the stale request "old request" (icon and word)');
+  await m.locator('[data-f="all"]').click();
+  const inThrone = sel => m.evaluate(q => { const a = document.activeElement; return !!a && !!a.closest('.throne') && a.matches(q); }, sel);
+  await m.locator('#t-older').focus(); await m.keyboard.press('Enter');
+  check(await inThrone('#t-older') && await m.locator('#t-older').textContent() === `Show older (${total - 5})`, 'Enter on Show only the newest 5: focus stays on that control, inside the Throne');
+  await m.keyboard.press('Enter');
+  check(await inThrone('#t-older') && await m.locator('#t-older').textContent() === 'Show only the newest 5', 'Enter on Show older: focus stays on that control');
+  await m.locator('[data-f="expired"]').focus(); await m.keyboard.press('Enter');
+  check(await inThrone('[data-f="expired"]') && await m.locator('[data-f="expired"]').getAttribute('aria-pressed') === 'true', 'Enter on a History filter: focus stays on that filter, not on the page body');
   await m.locator('[data-f="all"]').click();
   if (process.env.SHOTS) await m.locator('section[aria-labelledby="t-hist"]').screenshot({path: path.join(process.env.SHOTS, 'history-412-open.png')});
   await card.locator('button.more').click();
@@ -308,5 +326,26 @@ run(async b => {
   const w = await page(b, 1440, 900); await w.setExtraHTTPHeaders(WHO); await w.goto(BASE + 'throne'); await w.locator('.tablet').first().waitFor();
   if (process.env.SHOTS) await w.screenshot({path: path.join(process.env.SHOTS, 'throne-1440-full.png'), fullPage: true});
   await m.close(); await n.close(); await w.close();
+  // review F1: an equal version with another commit is not stale; F3.3: the very commit Zeus deployed last; F3.1: while
+  // Zeus deploys a program, no "installed some other way" sentence for it
+  rec('20261111-060000-argus-ui-4444444', {sha: '4'.repeat(40), version: '4.36.0', subject: 'After review: fixes'});
+  rec('20261111-060001-hermes-ddddddd', {repo: 'you/hermes', sha: 'd'.repeat(40), version: '0.9.0', subject: 'The same commit again'});
+  const z = await page(b, 412, 915); await z.setExtraHTTPHeaders(WHO);
+  await z.goto(BASE + 'throne'); await z.locator('.tablet[data-id="20261111-060000-argus-ui-4444444"]').waitFor();
+  const eq = z.locator('.tablet[data-id="20261111-060000-argus-ui-4444444"]');
+  check(await eq.locator('button.go').count() === 1 && !/Older than what runs/.test(await eq.textContent()) && await eq.evaluate(li => !li.classList.contains('old')),
+    'an equal version with another commit is not stale: it keeps its Deploy');
+  const same = z.locator('.tablet[data-id="20261111-060001-hermes-ddddddd"] .do .meta');
+  check(await same.textContent() === 'This is the version Zeus deployed last. He installs it again, then checks that it works. If the check fails, there is nothing for him to put back.',
+    'the very commit Zeus deployed last: the sentence promises no put-back (zeus/deploy.py restore() has none)');
+  await z.close();
+  rec('20261111-070000-argus-ui-5555555', {state: 'deploying', sha: '5'.repeat(40), version: '4.38.0', deploy: {started: true, unit: 'zeus-deploy-x'}}, 'queue/.done');
+  const dp = await page(b, 412, 915); await dp.setExtraHTTPHeaders(WHO);
+  await dp.goto(BASE + "throne"); await dp.locator(".run").first().waitFor();
+  const ylv = dp.locator('.live[data-repo="you/argus-ui"]');
+  check(/Zeus is deploying a new version now\./.test(await ylv.textContent()) && !/installed some other way|by hand/.test(await ylv.textContent()), 'while Zeus deploys it: no drift sentence, only what is true');
+  check(/the newer version was installed some other way/.test(await dp.locator('.live[data-repo="you/hermes"]').textContent()) === false, 'hermes has no drift: nothing said');
+  await dp.close();
+  fs.unlinkSync(path.join(D, 'queue', '.done', '20261111-070000-argus-ui-5555555.json'));
   srv.close();
 });

@@ -39,9 +39,10 @@ TAIL = 80             # log lines the page gets
 # What really runs (0.7.0): a repository whose health is { "http": ... } is asked for its JSON `version`. Only this machine
 # (the literal address 127.0.0.1, so no name lookup and no proxy), GET only, no redirect followed, 1 s in all, 64 KB at most,
 # the answer kept 30 s. Any failure is "unknown", never an error on the page. post() never asks.
-HEALTH_URL = re.compile(r"^http://127\.0\.0\.1:(\d{1,5})(/[!-~]*)?$")
-VERSION_TEXT = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]{0,39}$")
-VERSION_NUM = re.compile(r"^\d{1,9}(\.\d{1,9}){0,3}$")
+# ASCII digits only, and always fullmatch(): no Unicode digits, no trailing newline (review F4)
+HEALTH_URL = re.compile(r"http://127\.0\.0\.1:([0-9]{1,5})(/[!-~]*)?", re.ASCII)
+VERSION_TEXT = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+-]{0,39}", re.ASCII)
+VERSION_NUM = re.compile(r"[0-9]{1,9}(\.[0-9]{1,9}){0,3}", re.ASCII)
 ASK_S, KEEP_S, MAX_READ = 1.0, 30.0, 64 * 1024
 _kept, _kept_lock = {}, threading.Lock()
 _tick = time.monotonic   # the clock of the 30 s keep (tests replace it)
@@ -153,7 +154,7 @@ def _ask_version(url):
     A plain socket to the literal address 127.0.0.1 (re-checked here; the file is not trusted): no name lookup, no proxy
     from the environment, no redirect (only a 200 counts), one fixed request line, 1 s for everything, 64 KB at most.
     Elaia's server is threaded, so asking her own health address from inside her request handler cannot block her."""
-    m = HEALTH_URL.match(url) if isinstance(url, str) else None
+    m = HEALTH_URL.fullmatch(url) if isinstance(url, str) else None
     if not m or not 1 <= int(m.group(1)) <= 65535:
         return None
     port, path = int(m.group(1)), m.group(2) or "/"
@@ -186,7 +187,7 @@ def _ask_version(url):
     except (UnicodeError, ValueError):
         return None
     v = doc.get("version") if isinstance(doc, dict) else None
-    return v if isinstance(v, str) and VERSION_TEXT.match(v) else None
+    return v if isinstance(v, str) and VERSION_TEXT.fullmatch(v) else None
 
 
 def running_version(url):
@@ -203,7 +204,7 @@ def running_version(url):
 
 def vtuple(v):
     """'4.36.0' -> (4, 36, 0, 0); anything that is not numbers and dots -> None."""
-    if not isinstance(v, str) or not VERSION_NUM.match(v):
+    if not isinstance(v, str) or not VERSION_NUM.fullmatch(v):
         return None
     n = [int(x) for x in v.split(".")]
     return tuple(n + [0] * (4 - len(n)))
@@ -234,7 +235,7 @@ def deployed_now():
         prev = st.get("previous") if isinstance(st.get("previous"), dict) else None
         health = repos.get(key, {}).get("health") if isinstance(repos.get(key), dict) else None
         url = health.get("http") if isinstance(health, dict) else None
-        v = running_version(url) if isinstance(url, str) and HEALTH_URL.match(url) else None
+        v = running_version(url) if isinstance(url, str) and HEALTH_URL.fullmatch(url) else None
         run = {"version": v} if v else None
         out.append({"repo": key, "kind": kind.get(key, "git"), "deployed": live, "previous": prev,
                     "running": run, "drift": drift(run, live)})
@@ -242,10 +243,11 @@ def deployed_now():
 
 
 def is_stale(rec, live):
-    """A waiting request whose version is not newer than what runs now: it needs nobody, it expires by itself."""
+    """A waiting request whose version is older than what runs now: it needs nobody, it expires by itself. An equal
+    version is not stale: it says nothing about which commit runs (a fix after review often keeps the version)."""
     run = next((d["running"] for d in live if d["repo"] == rec.get("repo") and d.get("running")), None)
     a, b = vtuple(rec.get("version")), vtuple(run.get("version")) if run else None
-    return a is not None and b is not None and a <= b
+    return a is not None and b is not None and a < b
 
 
 def alert():
@@ -322,7 +324,7 @@ def _day(iso, now):
 
 
 def status_line(waiting, live, opened=(), now=None):
-    """One sentence: questions, deploys that need a yes, old requests (not newer than what runs; they expire by
+    """One sentence: questions, deploys that need a yes, old requests (older than what runs; they expire by
     themselves), and per repository the version that runs ("running") or, when nothing answers, Zeus's last deploy."""
     now = now or datetime.now(timezone.utc).astimezone()
     old = [r for r in waiting if r.get("stale")]
@@ -345,7 +347,7 @@ def status_line(waiting, live, opened=(), now=None):
 def home_status():
     """Elaia's Home (status v2): the line, and "needs you" with a verb-first button while something waits. Open asks
     count too: a question waiting for an answer needs the owner as much as a deploy waiting for a yes. An old request
-    (stale: not newer than what runs) needs nobody and is not counted."""
+    (stale: older than what runs) needs nobody and is not counted."""
     s = snapshot()
     w = [r for r in s["waiting"] if r.get("state") == "pending" and not r.get("stale")]
     q = len(s["asks"])

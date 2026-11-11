@@ -331,7 +331,8 @@ class ThronePluginTest(unittest.TestCase):
             self.assertEqual(asked, ["/api/health"], "GET of the configured path, once")
         d, _ = self.runs("4.36.0", state=False)
         self.assertEqual((d["running"], d["drift"], d["deployed"]), ({"version": "4.36.0"}, "no-record", None))
-        for body in (b"<html>not json</html>", b'["4.36.0"]', b'{"version": 436}', b'{"version": "<b>4</b>"}', b'{"ok": true}', b""):
+        for body in (b"<html>not json</html>", b'["4.36.0"]', b'{"version": 436}', b'{"version": "<b>4</b>"}', b'{"ok": true}', b"",
+                     b'{"version": "4.36.0\\n"}', '{"version": "\u0664.\u0663\u0666.\u0660"}'.encode(), '{"version": "\uff14.\uff13\uff16.\uff10"}'.encode()):
             d, _ = self.runs(body=body)
             self.assertEqual((d["running"], d["drift"]), (None, "unknown"), body)
         hermes = self.p.snapshot(self.now)["deployed"][1]
@@ -363,7 +364,11 @@ class ThronePluginTest(unittest.TestCase):
         real = socket.create_connection
         for url in ("http://localhost:%d/" % port, "http://127.0.0.2:%d/" % port, "https://127.0.0.1:%d/" % port,
                     "http://127.0.0.1:%d@192.0.2.1/" % port, "http://192.0.2.1:%d/" % port, "http://[::1]:%d/" % port,
-                    "http://127.0.0.1/", "http://127.0.0.1:99999/", "http://127.0.0.1:%d/a b" % port, "ftp://127.0.0.1:%d/" % port):
+                    "http://127.0.0.1/", "http://127.0.0.1:99999/", "http://127.0.0.1:%d/a b" % port, "ftp://127.0.0.1:%d/" % port,
+                    # review F4: a trailing newline, Arabic-Indic and full-width digits for the port
+                    "http://127.0.0.1:%d/api/health\n" % port, "http://127.0.0.1:%d/\n" % port,
+                    "http://127.0.0.1:%s/" % str(port).translate(str.maketrans("0123456789", "\u0660\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668\u0669")),
+                    "http://127.0.0.1:%s/" % str(port).translate(str.maketrans("0123456789", "\uff10\uff11\uff12\uff13\uff14\uff15\uff16\uff17\uff18\uff19"))):
             self.p = load_plugin()
             self.config({"http": url})
             with mock.patch.object(self.p.socket, "create_connection", lambda *a, **kw: calls.append(a) or real(*a, **kw)):
@@ -412,13 +417,33 @@ class ThronePluginTest(unittest.TestCase):
         self.assertEqual((self.data / "queue" / "20261021-090000-argus-ui-aaaaaaa.json").read_bytes(), before, "a read writes nothing")
         # a newer one arrives: it needs him; the old one still does not count
         self.rec("20261022-090000-argus-ui-aaaaaab", version="4.37.0")
-        self.rec("20261022-090001-argus-ui-aaaaaac", version="4.36.0", expires=stamp(self.now + timedelta(hours=1)))
+        self.rec("20261022-090001-argus-ui-aaaaaac", version="4.35.0", expires=stamp(self.now + timedelta(hours=1)))
         s = self.p.snapshot(self.now)
-        self.assertEqual([(r["version"], r["stale"]) for r in s["waiting"]], [("4.36.0", True), ("4.37.0", False), ("4.33.0", True)])
+        self.assertEqual([(r["version"], r["stale"]) for r in s["waiting"]], [("4.35.0", True), ("4.37.0", False), ("4.33.0", True)])
         self.assertEqual(s["line"], "1 deploy waiting · 2 old requests, expire by %s · argus-ui 4.36.0 running" % day)
         st = self.p.get("status", {}, Ctx())[1]
         self.assertEqual((st["needs"], st["action"], st["count"]), (True, "Review argus-ui 4.37.0", 1))
         self.assertEqual(self.p.get("summary", {}, Ctx())[1]["deploys"], 1)
+
+    def test_an_equal_version_with_another_commit_is_not_stale(self):
+        """Review F1: a fix after review often keeps VERSION, so an equal version says nothing about which commit runs."""
+        port, _ = self.health_server(lambda path: (200, {}, b'{"version": "4.36.0"}'))
+        self.config({"http": "http://127.0.0.1:%d/api/health" % port})
+        self.state("4.33.0")
+        self.rec("20261022-090000-argus-ui-bbbbbbb", version="4.36.0", sha="b" * 40)
+        s = self.p.snapshot(self.now)
+        self.assertEqual([r["stale"] for r in s["waiting"]], [False])
+        self.assertEqual(s["line"], "1 deploy waiting · argus-ui 4.36.0 running")
+        st = self.p.get("status", {}, Ctx())[1]
+        self.assertEqual((st["needs"], st["action"], st["count"]), (True, "Review argus-ui 4.36.0", 1))
+        self.assertEqual(self.p.get("summary", {}, Ctx())[1]["stale"], 0)
+
+    def test_versions_are_ascii_numbers_only(self):
+        """Review F4: Unicode digits and a trailing newline never make a version (so never a stale request)."""
+        for v in ("4.36.0\n", "\u0664.\u0663\u0666.\u0660", "\uff14.\uff13\uff16.\uff10", "4.36.0 ", "v4.36.0", ""):
+            self.assertIsNone(self.p.vtuple(v), repr(v))
+        self.assertEqual(self.p.vtuple("4.36"), (4, 36, 0, 0))
+        self.assertIsNone(self.p.VERSION_TEXT.fullmatch("4.36.0\n"))
 
     def test_without_an_answer_nothing_is_stale_and_the_old_keys_keep_their_meaning(self):
         self.state("4.33.0")

@@ -42,8 +42,9 @@
 .throne .dont .no{color:var(--powder);font-weight:400}
 .throne .tablet.old{border-top-color:var(--line)}
 .throne .olds{font-size:var(--fs-sec);font-weight:600;color:var(--snow)}
+.throne .oldh{display:inline-block;font-size:var(--fs-sec);font-weight:600;color:var(--snow);margin:var(--s4) 0 var(--s2);padding:2px var(--s2);border-radius:6px;background:rgb(28 33 39 / .9)}   /* Old requests: after the cards that need a yes; a dark backing keeps it readable over the scenery */
 /* the notes, folded: one control opens them; markdown became plain styled text (no raw marks) */
-.throne .more,.throne .other{justify-self:start;color:var(--powder)}
+.throne .more,.throne .other,.throne .less{justify-self:start;color:var(--powder)}
 /* Deployed now: what runs, in words; each action with its sentence under it */
 .throne .now{font-size:var(--fs-body);color:var(--snow)}
 .throne .act{display:grid;gap:var(--s1);justify-items:start}

@@ -17,6 +17,7 @@ leafy.register('throne', (() => {
   const FILTERS = [['all', 'All'], ['waiting', 'Waiting'], ['expired', 'Expired'], ['failed', 'Failed']];
   const FAILED = ['failed', 'rolled-back', 'refused'];
   const NEWEST = 5;   // History shows the newest five rows; one control shows the rest
+  const LONG = 20;    // notes longer than this get a second Hide the notes at their end
   let A = null, ROOT = null, S = null, filter = 'all', timer = 0, said = '', heard = '', stale = false, askedOpen = false, olderOpen = false;
   const openLogs = new Set(), openNotes = new Set(), openOther = new Set();   // what the reader unfolded stays unfolded across redraws
   const $ = (s, el = ROOT) => el.querySelector(s), $$ = (s, el = ROOT) => [...el.querySelectorAll(s)];
@@ -43,9 +44,12 @@ leafy.register('throne', (() => {
     close(); return out.join('');
   }
   // the one sentence under Deploy: what happens, and what Zeus puts back if the health check fails. He puts back his
-  // own last deploy (state.deployed), which is not always what runs now; the sentence says so when they differ.
+  // own last deploy (state.deployed), which is not always what runs now; the sentence says so when they differ. When the
+  // request IS his last deploy (the same commit), restore() in zeus/deploy.py has nothing to put back, and says so.
   function consequence(r) {
     const d = liveOf(r), own = d.deployed && ver(d.deployed), run = runs(d);
+    if (own && d.deployed.sha && d.deployed.sha === r.sha)
+      return 'This is the version Zeus deployed last. He installs it again, then checks that it works. If the check fails, there is nothing for him to put back.';
     const back = !own ? 'there is no earlier version for him to put back.'
       : run && run !== own && d.drift !== 'same' ? `he puts back ${own}, his own last deploy (not ${run}, which runs now).` : `he puts ${own} back.`;
     return `Zeus installs it, then checks that it works. If the check fails, ${back}`;
@@ -92,7 +96,8 @@ leafy.register('throne', (() => {
   function tablet(r) {
     // In this order, so a tired reader decides on the first screen: (a) one summary line, (b) Deploy with one sentence of
     // consequence, (c) Decline apart, quieter, with its own sentence, (d) the notes folded, (e) the commit inside the fold.
-    // A stale request (not newer than what runs) says so first and offers Decline only: nothing on it deploys.
+    // A stale request (older than what runs) says so first and offers Decline only: nothing on it deploys. Stale cards
+    // sit under their own small heading, Old requests, after the cards that need a yes.
     const refused = r.janus && r.janus.verdict === 'refused' && (r.janus.reasons || []).length;
     const lines = noteLines(r), open = openNotes.has(r.id), id = e(r.id);
     const files = Number.isInteger(r.files) ? plural(r.files, 'file') + ' changed' : 'files: git could not say';
@@ -107,7 +112,7 @@ leafy.register('throne', (() => {
       ${(r.rules_changed || []).length ? `<p class="rules"><span aria-hidden="true">⚑</span> <b>Changes the realm's own rules:</b> ${r.rules_changed.map(f => `<code>${e(f)}</code>`).join(', ')}. Read those files before you hold.</p>` : ''}
       ${r.state === 'held' && !r.stale ? '<p class="note">Janus could not answer last time, so Zeus held it. Hold Deploy again once Janus is back.</p>' : ''}
       ${refused ? `<div class="note bad"><b>Janus refused the last approval:</b><ul>${r.janus.reasons.map(x => `<li>${e(x)}</li>`).join('')}</ul></div>` : ''}
-      <div class="decide">${r.stale ? `${decline}<p class="meta">To go back to an older version, use Roll back below.</p>`
+      <div class="decide">${r.stale ? decline
         : `<div class="do"><button type="button" class="go" aria-describedby="go-${id}">Deploy ${e(name(r))} ${e(ver(r))}</button>
           <p class="meta" id="go-${id}">${e(consequence(r))}</p></div>${decline}`}</div>
       <form class="why" hidden><fieldset><legend>Why not deploy ${e(name(r))} ${e(ver(r))}?</legend>
@@ -118,6 +123,7 @@ leafy.register('throne', (() => {
         <p class="subj">${e(r.subject)}</p>
         <p>${commit(r)}</p>${pack}
         ${lines.length ? `<div class="notes" aria-label="What changed">${notes(lines)}</div>` : '<p class="meta">This version came without notes.</p>'}
+        ${lines.length > LONG ? '<button type="button" class="less" aria-expanded="true">Hide the notes</button>' : ''}
       </div>
     </li>`;
   }
@@ -133,19 +139,21 @@ leafy.register('throne', (() => {
   // Deployed now, in words: what runs (when the program answers), and only when Zeus's own record differs, one sentence on
   // how. Roll back keeps its hold and says what it puts in place of what; when the record differs from what runs, its
   // target is older than a person would expect, so it sits folded behind "Other actions". One Check main again per program.
-  const DRIFT = {newer: own => `Zeus's own last deploy was ${own}; the newer version was installed by hand.`,
+  // While Zeus deploys that program, what runs moves ahead of his record (after the install, before the health check
+  // passes), so no drift sentence then: only what is true.
+  const DRIFT = {newer: own => `Zeus's own last deploy was ${own}; the newer version was installed some other way.`,
     older: own => `Zeus's own last deploy was ${own}; an older version runs instead.`,
-    'no-record': () => 'Zeus has not deployed it yet; this version was installed by hand.'};
+    'no-record': () => 'Zeus has not deployed it yet; this version was installed some other way.'};
   function liveRow(d) {
     const l = d.deployed, p = d.previous, k = e(name(d)), id = e(d.repo.replace('/', '--')), run = runs(d);
-    const odd = d.drift in DRIFT, open = openOther.has(d.repo);
+    const odd = d.drift in DRIFT, open = openOther.has(d.repo), busy = (S.deploying || []).some(x => x.repo === d.repo);
     const who = l && l.approval && l.approval.user ? `, approved${by(l.approval)}` : '';
     const back = p ? `<div class="act"><button type="button" class="back" data-sha="${e(p.sha)}" aria-describedby="rb-${id}">Roll back to ${e(ver(p))}</button>
         <p class="meta" id="rb-${id}">Zeus puts ${e(ver(p))} back in place of ${e(run || ver(l || {}))}, then checks that it works.</p></div>` : '';
     return `<li class="live" data-repo="${e(d.repo)}">
       <h4>${k}</h4>
       ${run ? `<p class="now">Runs now: <b>${e(run)}</b></p>` : l ? `<p class="now">Last deployed by Zeus: <b>${e(ver(l))}</b></p>` : ''}
-      ${odd ? `<p class="meta">${e(DRIFT[d.drift](l ? ver(l) : ''))}</p>`
+      ${busy && odd ? '<p class="meta">Zeus is deploying a new version now.</p>' : odd ? `<p class="meta">${e(DRIFT[d.drift](l ? ver(l) : ''))}</p>`
         : l ? `<p class="meta">Zeus deployed it ${e(ago(l.at))}${who}.</p>` : run ? '' : '<p class="meta">Nothing deployed by Zeus yet.</p>'}
       ${staged(d) ? '<p class="meta">A new version comes from a pack staged by its session.</p>'
         : `<div class="act"><button type="button" class="re" data-repo="${e(d.repo)}" aria-describedby="re-${id}">Check main again</button>
@@ -171,7 +179,7 @@ leafy.register('throne', (() => {
 
   function draw() {
     const focus = document.activeElement && ROOT.contains(document.activeElement) ? key(document.activeElement) : null;
-    const hist = shown();
+    const hist = shown(), fresh = S.waiting.filter(r => !r.stale), olds = S.waiting.filter(r => r.stale);
     ROOT.innerHTML = `<div class="throne">
       <p class="tline" id="tstatus" role="status">${e(said || S.line)}</p>
       <p class="sr" aria-live="polite" id="tstage"></p>
@@ -181,8 +189,9 @@ leafy.register('throne', (() => {
         ${(S.asks || []).length ? `<ul class="asks">${S.asks.map(askCard).join('')}</ul>` : '<p class="empty">Nothing is waiting for you.</p>'}
         ${(S.asked || []).length ? `<details class="asked"${askedOpen ? ' open' : ''}><summary>Answered and expired (${S.asked.length})</summary><ul class="hist">${S.asked.map(askedRow).join('')}</ul></details>` : ''}</section>
       <section aria-labelledby="t-wait"><h3 id="t-wait">Waiting for your yes</h3>
-        ${S.waiting.length ? `<ul class="tablets">${S.waiting.map(tablet).join('')}</ul>`
-          : '<p class="empty">Nothing waits for your yes. A new version shows up here within the hour.</p>'}</section>
+        ${fresh.length ? `<ul class="tablets">${fresh.map(tablet).join('')}</ul>`
+          : '<p class="empty">Nothing waits for your yes. A new version shows up here within the hour.</p>'}
+        ${olds.length ? `<h4 class="oldh" id="t-old">Old requests</h4><ul class="tablets" aria-labelledby="t-old">${olds.map(tablet).join('')}</ul>` : ''}</section>
       ${S.deploying.length ? `<section aria-labelledby="t-run"><h3 id="t-run">Deploying</h3><ul class="runs">${S.deploying.map(running).join('')}</ul></section>` : ''}
       </div><div class="tcol">
       <section aria-labelledby="t-live"><h3 id="t-live">Deployed now</h3>
@@ -195,7 +204,7 @@ leafy.register('throne', (() => {
     if (focus) { const el = find(focus); if (el) el.focus(); }
   }
   // a redraw must keep keyboard focus: remember the button by its card and its class, find it again after
-  const key = el => { const li = el.closest('[data-id],[data-repo]'), b = el.closest('button,a,pre,input'); return li && b ? [li.dataset.id || li.dataset.repo, b.className.split(' ')[0] || b.tagName] : el.dataset && el.dataset.f ? ['f', el.dataset.f] : el.id ? ['#', el.id] : null; };
+  const key = el => { const li = el.closest('[data-id],[data-repo]'), b = el.closest('button,a,pre,input'); return li && li !== ROOT && ROOT.contains(li) && b ? [li.dataset.id || li.dataset.repo, b.className.split(' ')[0] || b.tagName] : el.dataset && el.dataset.f ? ['f', el.dataset.f] : el.id ? ['#', el.id] : null; };
   const find = ([id, cls]) => id === 'f' ? $(`[data-f="${cls}"]`) : id === '#' ? $(`#${CSS.escape(cls)}`) : $$('[data-id],[data-repo]').filter(li => (li.dataset.id || li.dataset.repo) === id).map(li => li.querySelector(`.${CSS.escape(cls)}`) || li.querySelector(cls.toLowerCase())).find(Boolean);
 
   /* ---------- what the buttons do: each one asks Zeus and shows what he said ---------- */
@@ -232,6 +241,7 @@ leafy.register('throne', (() => {
       more.onclick = () => { const open = fold.hidden; fold.hidden = !open; more.setAttribute('aria-expanded', String(open));
         const n = noteLines(r).length; more.textContent = open ? 'Hide the notes' : n ? `Read the notes (${plural(n, 'line')})` : 'More about this version';
         if (open) openNotes.add(r.id); else openNotes.delete(r.id); };
+      const less = $('.less', li); if (less) less.onclick = () => { more.click(); more.focus(); };   // closes from the end, focus back on top
       const no = $('.no', li), form = $('.why', li);
       no.onclick = () => { const open = form.hidden; form.hidden = !open; no.setAttribute('aria-expanded', String(open)); if (open) $('input:checked', form).focus(); };
       $('.keep', form).onclick = () => { form.hidden = true; no.setAttribute('aria-expanded', 'false'); no.focus(); };
