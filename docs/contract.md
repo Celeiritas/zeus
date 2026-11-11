@@ -159,7 +159,7 @@ It makes a request for the current `main` (or takes the one already waiting for 
 ## 8. Root actions from the phone (design §16): records, results, the log line, the attention line
 **Status: designed, nothing built.** The whole design is `docs/design.md` §16 (tier R in §14). This section is what crosses the borders between the key page, the gate, the runner and the readers of root's log. Times are ISO 8601 with the server's offset. Placeholders in examples are filled in on the server. Where the private design names a fact but not yet a field, the text says "fixed in Z2" and the slice that builds it writes the shape here before it merges.
 
-**Never in any of these files or lines:** a key id or user handle (only the key ref: the first 16 hex digits of the SHA-256 of the key id), a secret, a home path.
+**Never in the result file, the run log, `attention.jsonl`, the quarantine line, the journal or any file a normal-user process can read:** a key id or user handle (only the key ref: the first 16 hex digits of the SHA-256 of the key id), a secret, a home path. The ids do exist in the inbox record (8b), the gate's answers (8c) and `keys.json`, and only there; the inbox, `work/`, `quarantine/` and `keys.json` (root:`zeus-root-gate` 640) are not readable by the normal user. The owners' file has the same mode; `labels.json` (root 644) holds no ids. The full table of owners and modes is `docs/design.md` §16.3.
 
 ### 8a. The list entry (`/etc/zeus-root/actions.json`, one entry; the real file is private, the repository carries an `.example`)
 ```json
@@ -192,15 +192,15 @@ One file per approved try, written under a temporary name and renamed into place
   "signature": "<b64url>", "userHandle": "<b64url>",
   "seen": { "login": "<login>", "node": "<phone device name>", "ip": "<address>" } }
 ```
-- The first six assertion fields are what the phone returned (`finish` of the gate). `seen` is what the gate saw; root takes it as the gate's word, not as proof.
-- `type` is `run` for an action, `check-key` for the Self-test's check of one key (then also `"params": { "key": "<key ref>" }`; root accepts any registered key of the asking device for it and runs nothing), or `reach` for a check-in: `{ "type": "reach", "run": "<run id>", "seen": { … } }`.
+- The five assertion fields (`credentialId`, `clientDataJSON`, `authenticatorData`, `signature`, `userHandle`) are what the phone returned (`finish` of the gate, whose sixth key is the nonce). `seen` is what the gate saw; root takes it as the gate's word, not as proof.
+- `type` is `run` for an action, `check-key` for the Self-test's check of one key (then also `"params": { "key": "<key ref>" }`, and the challenge's `action` is the string `"check-key"`; root accepts any registered key of the asking device for it and runs nothing), or `reach` for a check-in: `{ "type": "reach", "run": "<run id>", "seen": { … } }`.
 - Root recomputes the challenge from its own copy: SHA-256 of `zeus-root/v1\n` and the canonical JSON (keys sorted, no spaces, ASCII only) of `{ "action", "params", "list", "nonce", "exp", "origin" }`. `list` is the SHA-256 of the installed `actions.json`; `origin` is the key page's exact origin from `config.json`; `exp` is at most 180 s after issue.
 - Fixed in Z2: whether `action`, `nonce` and `exp` travel in the record itself or come from the gate's own state, and the exact key set of the `reach` record.
 
 ### 8c. The gate's calls (the key page's `POST` requests, JSON, `Content-Type: application/json`)
 | Path | Request | Answer |
 |---|---|---|
-| `/api/begin` | `{ "action" }` | `{ "nonce", "exp", "list", "origin", "challenge", "rpId", "allowCredentials": [<this action's keys for the asking device>], "userVerification": "required", "timeout": 60000 }` |
+| `/api/begin` | `{ "action", "params"? }` (`params` only for `"action": "check-key"`, where it is `{ "key": "<key ref>" }`; otherwise absent or `{}`) | `{ "nonce", "exp", "list", "origin", "challenge", "rpId", "allowCredentials": [<this action's keys for the asking device>], "userVerification": "required", "timeout": 60000 }` |
 | `/api/finish` | `{ "nonce", "credentialId", "clientDataJSON", "authenticatorData", "signature", "userHandle" }` | `{ "run" }` (a repeat for the same nonce returns the same run and writes nothing) |
 | `/api/result` | `{ "run"? }` | the result of 8d plus the run log's `ZEUS_STEP=` lines; with no run, this device's run that is waiting for a check-in |
 | `/api/reach` | `{ "run" }` | the same answer as `result` |
@@ -213,12 +213,12 @@ One file per run, rewritten as the run moves on. The design fixes these facts; t
 - the run id, the action id and the times;
 - the state: running, `waiting for your phone` (a reach check is open; carries the deadline), `done`, `stopped` (before the change), `failed` (after it, with whether the undo ran and whether it worked), `undone` (put back by itself), `superseded`, or `refused` (with the reason);
 - for a refusal, a failure or a put-back, one plain sentence for the key page, written by root, not by the script. "Nothing ran" is said only when this file says so.
-The steps shown while it runs come from the script's own `ZEUS_STEP=<n>/<total> <sentence>` lines in `run-<id>.log` (world-readable, no key id); `ZEUS_STAGE=change` marks the point after which a failure runs the undo. Exit codes of a script: 0 done · 2 stopped before the change · 3 not as expected after it; any other non-zero exit is a failure, and after `ZEUS_STAGE=change` it runs the undo once.
+The steps shown while it runs come from the script's own `ZEUS_STEP=<n>/<total> <sentence>` lines in `run-<id>.log` (world-readable, no key id); `ZEUS_STAGE=change` marks the point after which a failure runs the undo. Exit codes of a script: 0 done · 2 stopped before the change · 3 not as expected after it; any other non-zero exit before `ZEUS_STAGE=change` is `stopped` (nothing changed), and after it a failure that runs the undo once; an entry with no undo reports that the service did not come back.
 
 ### 8e. The log line (`/var/log/zeus-root/runs-YYYY-MM.jsonl`, root 644)
 One JSON object per try, readable by everyone on `{{SERVER}}`, so it holds no key id, user id or secret:
 ```json
-{ "t": "2026-11-12T08:05:11-07:00", "run": "<id>", "action": "close-media-lan", "outcome": "done",
+{ "t": "2026-11-12T08:05:11+00:00", "run": "<id>", "action": "close-media-lan", "outcome": "done",
   "exit": 0, "secs": 4.2, "undo_ran": false, "reach": "kept",
   "key": { "ref": "<first 16 hex of sha256(key id)>", "label": "phone", "device": "{{PHONE}}", "synced_claimed": true },
   "uv": true, "seen": { "login": "<login>", "node": "<node>", "ip": "<address>" },
@@ -239,7 +239,7 @@ One JSON object per try, readable by everyone on `{{SERVER}}`, so it holds no ke
 - The quarantine writes one line per entry: its type, size, owner and the checksum of its first 16 KB.
 
 ### 8f. The attention line (`/var/log/zeus-root/attention.jsonl`, root 644)
-One line for each of: a put-back by itself, a failed undo, a restart that did not come back, a pause, a quarantine flood, a refusal other than "game" or "busy", and the watcher unit failing. Elaia's side turns each new line into one `broke` event: a buzz of the kind *Something stopped working*, and Argus glares. The words come from root, one sentence each, for example:
+One line for each of: a put-back by itself, a failed undo, a restart that did not come back, a pause, a quarantine flood, a refusal of the class counted toward the pause (8e), and the watcher unit failing. A refusal in the classes **garbage** or **not counted** never writes an attention line (that would let anyone who can send garbage make the phone buzz again and again); it goes to the log only, with one warning for the owner at 20 garbage records in an hour. **Open, decided in slice Z3:** whether the **other** class (counter, BE changed, list changed, file rules, Serve mapping changed, rate limit, paused) writes an attention line; the private design says both "a refusal other than game or busy" and, elsewhere, a shorter list. Until Z3 decides, build the narrower list above. Elaia's side turns each new line into one `broke` event: a buzz of the kind *Something stopped working*, and Argus glares. The words come from root, one sentence each, for example:
 - `Close the media ports was put back: your phone did not check in`
 - `Zeus refused 3 tries`
 - `Restart Bluetooth: the service did not come back up`
