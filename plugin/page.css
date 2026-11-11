@@ -4,7 +4,9 @@
 .throne .tcols,.throne .tcol{display:grid;gap:var(--s6);align-content:start;min-width:0}
 /* wide screens: what needs you (waiting, deploying) on the left, what is (deployed now, history) on the right */
 @media (min-width:1200px){.throne{max-width:1600px}.throne .tcols{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
-.throne h3{margin:0 0 var(--s3);font-size:var(--fs-h2);font-weight:600;color:var(--snow)}
+.throne h3{margin:0 0 var(--s3);font-size:var(--fs-body);font-weight:600;color:var(--snow)}
+/* 0.7.0: three sizes (16, 14, 12) and two weights (400, 600) on the whole page */
+.throne b,.throne strong{font-weight:600}
 .throne h4{margin:0;font-size:var(--fs-body);font-weight:600;color:var(--snow);overflow-wrap:anywhere}
 .throne h4 b{color:var(--storm)}
 .throne ul,.throne ol{list-style:none;margin:0;padding:0}
@@ -12,7 +14,7 @@
 .throne p{margin:0}
 .throne button{min-height:var(--hit);padding:0 var(--s4);font-size:var(--fs-sec)}
 .throne .tline{font-size:var(--fs-body);color:var(--snow)}
-.throne .empty{color:var(--powder);font-size:var(--fs-sec)}
+.throne .empty{color:var(--powder);font-size:var(--fs-sec);border:0;padding:0;border-radius:0}   /* a section with nothing in it: one plain line */
 .throne a{color:var(--snow)}
 .throne code{font-size:var(--fs-meta);overflow-wrap:anywhere}
 
@@ -33,8 +35,25 @@
 .throne .tablet{border-top:3px solid var(--storm)}
 .throne .thead{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:var(--s2)}
 .throne .subj{font-size:var(--fs-sec);color:var(--snow);overflow-wrap:anywhere}
-.throne .clog{font-size:var(--fs-sec);color:var(--powder);display:grid;gap:var(--s1)}
-.throne .clog li::before{content:"· ";color:var(--storm)}
+/* 0.7.0: decide on the first screen. Deploy full width with its sentence; Decline on its own row, quieter, 16 px away */
+.throne .decide{display:grid;gap:var(--s4);margin-top:var(--s1)}
+.throne .do,.throne .dont{display:grid;gap:var(--s1);justify-items:start}
+.throne .do .go{width:100%}
+.throne .dont .no{color:var(--powder);font-weight:400}
+.throne .tablet.old{border-top-color:var(--line)}
+.throne .olds{font-size:var(--fs-sec);font-weight:600;color:var(--snow)}
+.throne .oldh{display:inline-block;font-size:var(--fs-sec);font-weight:600;color:var(--snow);margin:var(--s4) 0 var(--s2);padding:2px var(--s2);border-radius:6px;background:rgb(28 33 39 / .9)}   /* Old requests: after the cards that need a yes; a dark backing keeps it readable over the scenery */
+/* the notes, folded: one control opens them; markdown became plain styled text (no raw marks) */
+.throne .more,.throne .other,.throne .less{justify-self:start;color:var(--powder)}
+/* Deployed now: what runs, in words; each action with its sentence under it */
+.throne .now{font-size:var(--fs-body);color:var(--snow)}
+.throne .act{display:grid;gap:var(--s1);justify-items:start}
+.throne .fold{display:grid;gap:var(--s2);border-top:1px solid var(--line);padding-top:var(--s3)}
+.throne .fold[hidden]{display:none}
+.throne a.commit{display:inline-flex;align-items:center;min-height:var(--hit);font-size:var(--fs-sec)}
+.throne .notes{display:grid;gap:var(--s2);font-size:var(--fs-sec);color:var(--snow);overflow-wrap:anywhere;max-width:70ch}
+.throne .notes .nh{font-weight:600;margin-top:var(--s2)}
+.throne .notes .nl{list-style:disc;padding-left:var(--s4);display:grid;gap:var(--s1)}
 .throne .facts{display:flex;flex-wrap:wrap;gap:var(--s2) var(--s4);align-items:center}
 .throne .rules{font-size:var(--fs-sec);color:var(--snow);background:rgba(224,179,65,.12);border:1px solid var(--storm);border-radius:8px;padding:var(--s2) var(--s3)}
 .throne .note{font-size:var(--fs-sec);color:var(--snow);border-left:3px solid var(--storm);padding-left:var(--s3)}
@@ -61,6 +80,8 @@
 .throne .tail{margin:0;max-height:16em;overflow:auto;background:#161a1f;border-radius:8px;padding:var(--s2) var(--s3);font-size:var(--fs-meta);color:var(--powder);white-space:pre-wrap;overflow-wrap:anywhere}
 
 .throne .filters{display:flex;flex-wrap:wrap;gap:var(--s2);margin-bottom:var(--s3)}
+.throne .filters button{padding:0 var(--s3)}   /* the four fit in one row at 360 px, whatever the font */
+.throne .older{margin-top:var(--s3);color:var(--powder)}
 .throne .filters [aria-pressed="true"]{border-color:var(--storm);color:var(--snow)}
 .throne .talert{display:flex;flex-wrap:wrap;gap:var(--s3);align-items:center;justify-content:space-between;border:1px solid var(--storm);border-radius:12px;padding:var(--s3) var(--s4);color:var(--snow);font-size:var(--fs-sec)}
 .throne .talert.bad{border-color:var(--bad)}
