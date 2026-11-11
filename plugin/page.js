@@ -16,7 +16,8 @@ leafy.register('throne', (() => {
   const REASONS = [['not-now', 'Not now'], ['not-ready', 'Not ready'], ['wrong-commit', 'Wrong commit'], ['testing', 'Still testing']];
   const FILTERS = [['all', 'All'], ['waiting', 'Waiting'], ['expired', 'Expired'], ['failed', 'Failed']];
   const FAILED = ['failed', 'rolled-back', 'refused'];
-  let A = null, ROOT = null, S = null, filter = 'all', timer = 0, said = '', heard = '', stale = false, askedOpen = false;
+  const NEWEST = 5;   // History shows the newest five rows; one control shows the rest
+  let A = null, ROOT = null, S = null, filter = 'all', timer = 0, said = '', heard = '', stale = false, askedOpen = false, olderOpen = false;
   const openLogs = new Set(), openNotes = new Set(), openOther = new Set();   // what the reader unfolded stays unfolded across redraws
   const $ = (s, el = ROOT) => el.querySelector(s), $$ = (s, el = ROOT) => [...el.querySelectorAll(s)];
   const e = s => A.esc(String(s ?? ''));
@@ -155,11 +156,11 @@ leafy.register('throne', (() => {
     </li>`;
   }
   function row(r) {
-    const re = ['expired', 'superseded'].includes(r.state) && !staged(r);
+    // one control per row (its log); "Check main again" lives once per program under Deployed now
     return `<li class="hrow" data-id="${e(r.id)}">
       <div class="thead"><span>${chip(r.state, STATE)} <b>${e(name(r))} ${e(ver(r))}</b>${r.action === 'rollback' ? ' <span class="meta">(roll back)</span>' : ''}</span><span class="meta">${e(ago(when(r)))}</span></div>
       ${r.reason ? `<p class="meta">${e(r.reason)}</p>` : ''}
-      ${r.has_log || re ? `<div class="acts">${r.has_log ? `<button type="button" class="log" aria-expanded="false">Show the log</button>` : ''}${re ? `<button type="button" class="re" data-repo="${e(r.repo)}">Check main again</button>` : ''}</div>` : ''}
+      ${r.has_log ? '<div class="acts"><button type="button" class="log" aria-expanded="false">Show the log</button></div>' : ''}
       <pre class="tail" tabindex="0" aria-label="Deploy log" hidden></pre>
     </li>`;
   }
@@ -188,13 +189,14 @@ leafy.register('throne', (() => {
         ${S.deployed.length ? `<ul class="lives">${S.deployed.map(liveRow).join('')}</ul>` : '<p class="empty">Zeus has no repositories yet (repos.json).</p>'}</section>
       <section aria-labelledby="t-hist"><h3 id="t-hist">History</h3>
         <div class="filters" role="group" aria-label="Show">${FILTERS.map(([v, l]) => `<button type="button" data-f="${v}" aria-pressed="${v === filter}">${l}</button>`).join('')}</div>
-        ${hist.length ? `<ul class="hist">${hist.map(row).join('')}</ul>` : '<p class="empty">Nothing here yet.</p>'}</section></div></div></div>`;
+        ${hist.length ? `<ul class="hist">${hist.slice(0, olderOpen ? hist.length : NEWEST).map(row).join('')}</ul>` : '<p class="empty">Nothing here yet.</p>'}
+        ${hist.length > NEWEST ? `<button type="button" class="older" id="t-older" aria-expanded="${olderOpen}">${olderOpen ? `Show only the newest ${NEWEST}` : `Show older (${hist.length - NEWEST})`}</button>` : ''}</section></div></div></div>`;
     wire();
     if (focus) { const el = find(focus); if (el) el.focus(); }
   }
   // a redraw must keep keyboard focus: remember the button by its card and its class, find it again after
-  const key = el => { const li = el.closest('[data-id],[data-repo]'), b = el.closest('button,a,pre,input'); return li && b ? [li.dataset.id || li.dataset.repo, b.className.split(' ')[0] || b.tagName] : el.dataset && el.dataset.f ? ['f', el.dataset.f] : null; };
-  const find = ([id, cls]) => id === 'f' ? $(`[data-f="${cls}"]`) : $$('[data-id],[data-repo]').filter(li => (li.dataset.id || li.dataset.repo) === id).map(li => li.querySelector(`.${CSS.escape(cls)}`) || li.querySelector(cls.toLowerCase())).find(Boolean);
+  const key = el => { const li = el.closest('[data-id],[data-repo]'), b = el.closest('button,a,pre,input'); return li && b ? [li.dataset.id || li.dataset.repo, b.className.split(' ')[0] || b.tagName] : el.dataset && el.dataset.f ? ['f', el.dataset.f] : el.id ? ['#', el.id] : null; };
+  const find = ([id, cls]) => id === 'f' ? $(`[data-f="${cls}"]`) : id === '#' ? $(`#${CSS.escape(cls)}`) : $$('[data-id],[data-repo]').filter(li => (li.dataset.id || li.dataset.repo) === id).map(li => li.querySelector(`.${CSS.escape(cls)}`) || li.querySelector(cls.toLowerCase())).find(Boolean);
 
   /* ---------- what the buttons do: each one asks Zeus and shows what he said ---------- */
   function report(res, done) {
@@ -246,6 +248,7 @@ leafy.register('throne', (() => {
     $$('button.re').forEach(b => b.onclick = () => { b.disabled = true; ask('recheck', {repo: b.dataset.repo}, `Zeus checked main of ${b.dataset.repo.split('/').pop()}.`); });
     $$('button.log').forEach(b => b.onclick = () => toggleLog(b.closest('.hrow'), b));
     $$('[data-f]').forEach(b => b.onclick = () => { filter = b.dataset.f; draw(); });
+    const older = $('#t-older'); if (older) older.onclick = () => { olderOpen = !olderOpen; draw(); };
     const seen = $('.seen'); if (seen) seen.onclick = () => ask('seen', {}, 'Marked as read. Argus calms down on his next look.');
     for (const id of openLogs) { const li = $$('.hrow').find(x => x.dataset.id === id); if (li) toggleLog(li, $('.log', li), true); }
   }

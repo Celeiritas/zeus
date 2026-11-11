@@ -77,6 +77,7 @@
 .throne .tail{margin:0;max-height:16em;overflow:auto;background:#161a1f;border-radius:8px;padding:var(--s2) var(--s3);font-size:var(--fs-meta);color:var(--powder);white-space:pre-wrap;overflow-wrap:anywhere}
 
 .throne .filters{display:flex;flex-wrap:wrap;gap:var(--s2);margin-bottom:var(--s3)}
+.throne .older{margin-top:var(--s3);color:var(--powder)}
 .throne .filters [aria-pressed="true"]{border-color:var(--storm);color:var(--snow)}
 .throne .talert{display:flex;flex-wrap:wrap;gap:var(--s3);align-items:center;justify-content:space-between;border:1px solid var(--storm);border-radius:12px;padding:var(--s3) var(--s4);color:var(--snow);font-size:var(--fs-sec)}
 .throne .talert.bad{border-color:var(--bad)}
