@@ -301,7 +301,8 @@ run(async b => {
   const n = await page(b, 360, 800); await n.setExtraHTTPHeaders(WHO); await n.goto(BASE + 'throne'); await n.locator(`.tablet[data-id="${FRESH}"]`).waitFor();
   check(await noOverflow(n), '360 px: no sideways scrolling');
   const fr360 = await n.locator('[data-f]').evaluateAll(bs => new Set(bs.map(x => Math.round(x.getBoundingClientRect().top))).size);
-  check(fr360 === 1 && new Set(fr).size === 1, '360 px: the four filters fit in one row');
+  const fw = await n.locator('[data-f]').evaluateAll(bs => bs.map(x => Math.round(x.getBoundingClientRect().width)));
+  check(fr360 === 1 && new Set(fr).size === 1, `360 px: the four filters fit in one row (widths ${fw.join(', ')})`);
   if (process.env.SHOTS) await n.locator(`.tablet[data-id="${FRESH}"]`).screenshot({path: path.join(process.env.SHOTS, 'card-360-waiting.png')});
   await shot(n, 'throne-360');
   const w = await page(b, 1440, 900); await w.setExtraHTTPHeaders(WHO); await w.goto(BASE + 'throne'); await w.locator('.tablet').first().waitFor();
