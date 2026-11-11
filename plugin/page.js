@@ -10,7 +10,7 @@ leafy.register('throne', (() => {
   const STATE = {pending: ['⏳', 'waiting'], held: ['⏸', 'held'], approved: ['✓', 'approved'], deploying: ['⚡', 'deploying'],
     deployed: ['✓', 'deployed'], 'rolled-back': ['↩', 'rolled back'], failed: ['✕', 'failed'], expired: ['⌛', 'expired'],
     superseded: ['↑', 'superseded'], declined: ['⊘', 'declined'], refused: ['⊘', 'refused'], released: ['⇥', 'released'],
-    open: ['?', 'needs your answer'], answered: ['✓', 'answered']};
+    open: ['?', 'needs your answer'], answered: ['✓', 'answered'], old: ['↓', 'old request']};
   const CHECKS = {success: ['✓', 'checks passed'], failure: ['✕', 'checks failed'], pending: ['⋯', 'checks running'], none: ['–', 'no checks']};
   const STAGE = {done: ['✓', 'done'], now: ['⚡', 'running'], todo: ['○', 'to come'], failed: ['✕', 'failed here']};
   const REASONS = [['not-now', 'Not now'], ['not-ready', 'Not ready'], ['wrong-commit', 'Wrong commit'], ['testing', 'Still testing']];
@@ -158,7 +158,7 @@ leafy.register('throne', (() => {
   function row(r) {
     // one control per row (its log); "Check main again" lives once per program under Deployed now
     return `<li class="hrow" data-id="${e(r.id)}">
-      <div class="thead"><span>${chip(r.state, STATE)} <b>${e(name(r))} ${e(ver(r))}</b>${r.action === 'rollback' ? ' <span class="meta">(roll back)</span>' : ''}</span><span class="meta">${e(ago(when(r)))}</span></div>
+      <div class="thead"><span>${chip(r.stale ? 'old' : r.state, STATE)} <b>${e(name(r))} ${e(ver(r))}</b>${r.action === 'rollback' ? ' <span class="meta">(roll back)</span>' : ''}</span><span class="meta">${e(ago(when(r)))}</span></div>
       ${r.reason ? `<p class="meta">${e(r.reason)}</p>` : ''}
       ${r.has_log ? '<div class="acts"><button type="button" class="log" aria-expanded="false">Show the log</button></div>' : ''}
       <pre class="tail" tabindex="0" aria-label="Deploy log" hidden></pre>
@@ -166,7 +166,7 @@ leafy.register('throne', (() => {
   }
   const shown = () => {
     const w = S.waiting, h = S.history;
-    return filter === 'waiting' ? w : filter === 'expired' ? h.filter(r => r.state === 'expired') : filter === 'failed' ? h.filter(r => FAILED.includes(r.state)) : w.concat(h);
+    return filter === 'waiting' ? w : filter === 'expired' ? h.filter(r => r.state === 'expired') : filter === 'failed' ? h.filter(r => FAILED.includes(r.state)) : h;   // All = what happened; waiting requests have their own section
   };
 
   function draw() {

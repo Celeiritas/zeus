@@ -4,7 +4,9 @@
 .throne .tcols,.throne .tcol{display:grid;gap:var(--s6);align-content:start;min-width:0}
 /* wide screens: what needs you (waiting, deploying) on the left, what is (deployed now, history) on the right */
 @media (min-width:1200px){.throne{max-width:1600px}.throne .tcols{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
-.throne h3{margin:0 0 var(--s3);font-size:var(--fs-h2);font-weight:600;color:var(--snow)}
+.throne h3{margin:0 0 var(--s3);font-size:var(--fs-body);font-weight:600;color:var(--snow)}
+/* 0.7.0: three sizes (16, 14, 12) and two weights (400, 600) on the whole page */
+.throne b,.throne strong{font-weight:600}
 .throne h4{margin:0;font-size:var(--fs-body);font-weight:600;color:var(--snow);overflow-wrap:anywhere}
 .throne h4 b{color:var(--storm)}
 .throne ul,.throne ol{list-style:none;margin:0;padding:0}
@@ -12,7 +14,7 @@
 .throne p{margin:0}
 .throne button{min-height:var(--hit);padding:0 var(--s4);font-size:var(--fs-sec)}
 .throne .tline{font-size:var(--fs-body);color:var(--snow)}
-.throne .empty{color:var(--powder);font-size:var(--fs-sec)}
+.throne .empty{color:var(--powder);font-size:var(--fs-sec);border:0;padding:0;border-radius:0}   /* a section with nothing in it: one plain line */
 .throne a{color:var(--snow)}
 .throne code{font-size:var(--fs-meta);overflow-wrap:anywhere}
 
