@@ -2,7 +2,8 @@
 attention windows (D8), per-action limits, and the lock every start takes.
 
 Callers hold lock(ctx) around every read-modify-write here (the runner for a whole start, the command line for one
-change). Each file is written to a temporary name in its own folder, flushed and renamed into place, mode 600. A state
+change; the one call without it, the runner's spend for a record refused busy at the lock, is safe as spend_nonce
+says). Each file is written to a temporary name in its own folder, flushed and renamed into place, mode 600. A state
 file that doesn't read back raises Broken, and the caller stops instead of guessing (fail closed). Times come from
 ctx.now(); only the lock's wait uses the real monotonic clock.
 """
@@ -134,26 +135,40 @@ def spend_nonce(ctx, nonce, exp=None):
     passes it only once the signature checked out. The nonce is kept until a day after the later of the moment it was
     spent and exp, so a genuine record refused because its exp was too far ahead cannot run once that exp comes near:
     keeping it one day only let a lying gate hand the same signed record in again a day later (0.8.1 re-check,
-    finding 2). A nonce already spent is kept longer, never shorter, when a later call brings a signed exp past its
-    file's time: a copy refused before its signature keeps it one day, and the intact record whose signature then
-    checks out must still keep it until a day after that exp (re-check of de22580, finding 1)."""
+    finding 2). A nonce already spent is kept longer, never shorter, when a later call brings a signed exp that is
+    still ahead of root's clock and past its file's time: a copy refused before its signature keeps it one day, and the
+    intact record whose signature then checks out must still keep it until a day after that exp (re-check of de22580,
+    finding 1). A signed exp already past moves nothing: that record is never fresh again.
+
+    A call with an exp holds lock(ctx). The runner's call for a record refused busy at the lock (Z2b) holds no lock and
+    passes no exp, and it cannot move back a keep that a call under the lock set: a new nonce file gets its time under
+    a temporary name and is then linked into place, so it never shows without that time, and a call without a signed
+    exp never changes a file that is there (re-check of 32b460d, note 1)."""
     path = _nonce_path(ctx, nonce)
     now = ctx.now()
     signed_later = type(exp) is int and exp > now
     keep = max(now, min(exp, NONCE_KEEP_LIMIT)) if signed_later else now
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".spend.")
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW | _CLOEXEC, 0o600)
-    except FileExistsError:
-        if signed_later:
-            _keep_until(path, keep)
-        return False
-    _stamp(path, fd, keep)
-    _fsync_dir(path.parent)
-    return True
+        _stamp(tmp, fd, keep)
+        try:
+            os.link(tmp, path)
+            first = True
+        except FileExistsError:
+            first = False
+    finally:
+        with contextlib.suppress(OSError):   # a temporary left behind is pruned by its time like a nonce
+            os.unlink(tmp)
+    if first:
+        _fsync_dir(path.parent)
+    elif signed_later:
+        _keep_until(path, keep)
+    return first
 
 
 def _keep_until(path, t):
-    """Move a spent nonce's file time forward to t, never back."""
+    """Move a spent nonce's file time forward to t, never back. Only calls under the lock come here, so nothing else
+    changes the time between the fstat and the stamp."""
     fd = os.open(path, os.O_WRONLY | _NOFOLLOW | _CLOEXEC)
     try:
         later = os.fstat(fd).st_mtime < t

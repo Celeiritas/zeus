@@ -5,12 +5,29 @@ import tempfile
 import time
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 from tests import root_support
 from zeus_root import state
 
 NONCE = "A" * 43
 REF = "0123456789abcdef"
+
+
+class _NotQuiteInt(int):
+    """An int subclass, as bool is, but with a later value: it counts as no exp, like every type but int."""
+
+
+class _Steps:
+    """Stands in for a module state uses: every attribute read is one step and calls tick() before it hands the real
+    one back, so a test can run something else between any two steps of a call."""
+
+    def __init__(self, real, tick):
+        self._real, self._tick = real, tick
+
+    def __getattr__(self, name):
+        self._tick()
+        return getattr(self._real, name)
 
 
 class StateCase(unittest.TestCase):
@@ -53,7 +70,8 @@ class NonceTest(StateCase):
         self.assertTrue(state.spend_nonce(self.ctx, NONCE))
 
     def test_exp_in_the_past_or_not_an_int_keeps_a_day(self):
-        for exp in (int(self.t0) - 600, None, True, float(self.t0 + 9 * 86400), str(int(self.t0) + 9 * 86400)):
+        for exp in (int(self.t0) - 600, None, _NotQuiteInt(int(self.t0) + 9 * 86400), float(self.t0 + 9 * 86400),
+                    str(int(self.t0) + 9 * 86400)):
             with self.subTest(exp=exp):
                 self.at(0)
                 state.spend_nonce(self.ctx, NONCE, exp)
@@ -100,19 +118,64 @@ class NonceTest(StateCase):
                 self.at(0)
                 state.spend_nonce(self.ctx, NONCE, first)
                 self.at(3600)
-                for exp in (None, True, int(self.t0) - 600, int(self.t0) + 3000, float(far + 86400),
-                            str(far + 86400)):
+                for exp in (None, _NotQuiteInt(far + 86400), int(self.t0) - 600, int(self.t0) + 3000,
+                            float(far + 86400), str(far + 86400)):
                     self.assertFalse(state.spend_nonce(self.ctx, NONCE, exp))
                     self.assertEqual(os.stat(path).st_mtime, kept, exp)
                 if first is not None:
                     self.assertFalse(state.spend_nonce(self.ctx, NONCE, far - 86400))
                     self.assertEqual(os.stat(path).st_mtime, far)
 
+    def test_a_far_signed_exp_moves_a_spent_nonce_only_to_the_cap(self):
+        """Re-check of 32b460d, note 4: moving a spent nonce's time stops at 2^32 too, as a first spend does."""
+        path = self.ctx.lib / "nonces" / hashlib.sha256(NONCE.encode()).hexdigest()[:32]
+        self.assertTrue(state.spend_nonce(self.ctx, NONCE))
+        self.at(3600)
+        self.assertFalse(state.spend_nonce(self.ctx, NONCE, 2 ** 53 - 1))
+        self.assertEqual(os.stat(path).st_mtime, state.NONCE_KEEP_LIMIT)
+
+    def test_a_spend_without_the_lock_never_moves_a_signed_keep_back(self):
+        """Re-check of 32b460d, note 1: the runner spends the nonce of a record refused busy at the lock without the
+        lock and without an exp (Z2b). A spend under the lock with a signed exp may run at any point of it, and the
+        nonce must still end kept until that exp, with exactly one of the two spends the first. Each step of the
+        lockless spend (each use of os or tempfile in state) is tried in turn."""
+        path = self.ctx.lib / "nonces" / hashlib.sha256(NONCE.encode()).hexdigest()[:32]
+        exp = int(self.t0) + 2 * 86400
+        real_os, real_tempfile = state.os, state.tempfile
+        tried = 0
+        for k in range(1, 500):
+            for f in (self.ctx.lib / "nonces").iterdir():
+                f.unlink()
+            steps, locked = [0], []
+
+            def tick():
+                steps[0] += 1
+                if steps[0] == k:
+                    saved = state.os, state.tempfile
+                    state.os, state.tempfile = real_os, real_tempfile
+                    try:
+                        locked.append(state.spend_nonce(self.ctx, NONCE, exp))
+                    finally:
+                        state.os, state.tempfile = saved
+
+            with mock.patch.object(state, "os", _Steps(real_os, tick)):
+                with mock.patch.object(state, "tempfile", _Steps(real_tempfile, tick)):
+                    lockless = state.spend_nonce(self.ctx, NONCE)
+            if not locked:
+                break
+            tried += 1
+            with self.subTest(step=k):
+                self.assertEqual(os.stat(path).st_mtime, exp)
+                self.assertEqual(sorted([lockless, locked[0]]), [False, True])
+        self.assertGreater(tried, 5)
+        self.assertLess(tried, 499)
+
     def test_file_time_is_set_before_its_fsync(self):
         """Re-check of f4e8ad8, note C: the nonce file gets its time on the open file before the file's fsync, so a
         crash cannot leave it with only its creation time (kept a day instead of until its exp), also when a later
-        signed exp moves it. Linux only: Windows has no utime on a file descriptor, so there the time is set by name
-        after the close."""
+        signed exp moves it. Only fsyncs of the nonce file itself count: a second spend fsyncs a temporary too, which
+        is never linked. Linux only: Windows has no utime on a file descriptor, so there the time is set by name after
+        the close."""
         root_support.need("linux")
         import stat
         from unittest import mock
@@ -121,14 +184,15 @@ class NonceTest(StateCase):
         def fsync(fd):
             st = os.fstat(fd)
             if stat.S_ISREG(st.st_mode):
-                seen.append(st.st_mtime)
+                seen.append((st.st_ino, st.st_mtime))
             real(fd)
         exp = int(self.t0) + 3 * 86400     # an int, as a signed exp is: a float exp counts as none
         with mock.patch.object(state.os, "fsync", fsync):
             self.assertTrue(state.spend_nonce(self.ctx, NONCE, exp))
             self.at(3600)
             self.assertFalse(state.spend_nonce(self.ctx, NONCE, exp + 86400))
-        self.assertEqual(seen, [exp, exp + 86400])
+        ino = os.stat(self.ctx.lib / "nonces" / hashlib.sha256(NONCE.encode()).hexdigest()[:32]).st_ino
+        self.assertEqual([t for i, t in seen if i == ino], [exp, exp + 86400])
 
     def test_bad_nonce_refused(self):
         for nonce in ("A" * 42, "../" + "A" * 40, None, "A" * 42 + "B"):
