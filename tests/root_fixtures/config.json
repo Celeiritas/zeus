@@ -1,0 +1,2 @@
+{"rp_id": "h.example", "origin": "https://h.example:4443", "keyport": 4443, "gateport": 841,
+ "page_dir": "/usr/local/share/zeus-root/page", "games": ["gamescope", "steam"], "reach_game_max_s": 900}
