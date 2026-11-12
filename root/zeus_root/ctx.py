@@ -73,9 +73,12 @@ def server_zone(path=LOCALTIME):
 
     The file is read whole (at most ZONE_FILE_MAX bytes) and parsed from memory by a reader that refuses to read past
     its end: CPython's zoneinfo reads a version 2 footer one byte at a time until a newline and loops for ever when the
-    file ends first, and raises struct.error or AssertionError on some cut files (re-check R2). A missing, unreadable,
-    oversized or damaged file, or any error while parsing it, gives UTC: a wrong offset in a log line is better than a
-    runner that never starts."""
+    file ends first, and raises struct.error or AssertionError on some cut files (re-check R2). It is parsed by the
+    pure-Python zoneinfo, never the C one: on a well-formed file whose every zone type is marked summer time the C one
+    reads out of bounds and kills the process, which no except can catch (0.8.1 re-check, finding 1). The zone must
+    then give the time now: an offset of 24 h or more cannot, and iso() falls back to UTC for any later moment it
+    cannot give. A missing, unreadable, oversized or damaged file, or an error while parsing or using it, gives UTC: a
+    wrong offset in a log line is better than a runner that never starts."""
     try:
         with open(path, "rb") as f:
             data = f.read(ZONE_FILE_MAX + 1)
@@ -84,8 +87,10 @@ def server_zone(path=LOCALTIME):
     if len(data) > ZONE_FILE_MAX:
         return timezone.utc
     try:
-        from zoneinfo import ZoneInfo
-        return ZoneInfo.from_file(_NoReadPastEnd(data))
+        from zoneinfo._zoneinfo import ZoneInfo       # the pure-Python class, see above
+        zone = ZoneInfo.from_file(_NoReadPastEnd(data))
+        datetime.fromtimestamp(time.time(), zone).isoformat()
+        return zone
     except Exception:
         return timezone.utc
 
@@ -136,6 +141,11 @@ def ask_terminal(prompt):
 
 
 def iso(ctx, t):
-    """ISO 8601 to the second with the offset of ctx.tz at that moment, e.g. 2026-11-11T19:05:00-05:00."""
-    d = datetime.fromtimestamp(t, ctx.tz) if ctx.tz is not None else datetime.fromtimestamp(t).astimezone()
-    return d.isoformat(timespec="seconds")
+    """ISO 8601 to the second with the offset of ctx.tz at that moment, e.g. 2026-11-11T19:05:00-05:00. A moment the
+    zone cannot give (a damaged file's offset of 24 h or more raises ValueError) is given in UTC instead."""
+    if ctx.tz is None:
+        return datetime.fromtimestamp(t).astimezone().isoformat(timespec="seconds")
+    try:
+        return datetime.fromtimestamp(t, ctx.tz).isoformat(timespec="seconds")
+    except Exception:
+        return datetime.fromtimestamp(t, timezone.utc).isoformat(timespec="seconds")

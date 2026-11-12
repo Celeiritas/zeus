@@ -358,6 +358,42 @@ class TestRefusals(Base):
                     self.refused("used-nonce", intact, counter=stored, spend=spend)
                     self.assertEqual(spend.calls, 2)
 
+    def test_spend_gets_the_records_exp(self):
+        """0.8.1 re-check finding 2: spend gets the record's exp (an int) so the nonce outlives it; None when the exp is
+        not an int (such a record is malformed and can never verify)."""
+        exp = self.fx["record"]["exp"]
+        self.verify(self.forge())
+        self.assertEqual(self.spender.exps, [exp])
+        self.refused("expired", self.forge(), now=exp - 2 * 86400)
+        self.assertEqual(self.spender.exps, [exp])
+        for bad in (True, 1.5, "1794000000"):
+            with self.subTest(exp=bad):
+                with self.assertRaises(canon.Malformed):
+                    self.verify(dict(self.forge(), exp=bad))
+                self.assertEqual(self.spender.exps, [None])
+
+    def test_far_exp_refused_then_near_its_exp_is_used_nonce(self):
+        """0.8.1 re-check finding 2, with root's own nonce store: a lying gate issues an exp two days away, the owner
+        taps, root refuses `expired` and the key page says "Nothing ran". A day of pruning later the gate hands in the
+        same intact record 60 s before its exp: it must be `used-nonce`, not run. A day after its exp it is forgotten."""
+        import tempfile
+        from tests import root_support
+        from zeus_root import state
+        exp = self.fx["record"]["exp"]
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = root_support.make_ctx(tmp)
+
+            def spend(nonce, e):
+                return state.spend_nonce(ctx, nonce, e)
+            ctx.now.t = exp - 2 * 86400
+            self.refused("expired", self.forge(), now=ctx.now.t, spend=spend)
+            ctx.now.t = exp - 60
+            state.prune_nonces(ctx)
+            self.refused("used-nonce", self.forge(), now=ctx.now.t, spend=spend)
+            ctx.now.t = exp + 86400 + 1
+            state.prune_nonces(ctx)
+            self.assertTrue(state.spend_nonce(ctx, self.fx["record"]["nonce"]))
+
     def test_a_forgery_keeps_its_reason_when_the_nonce_is_spent(self):
         """`used-nonce` is decided only after the signature and freshness: a forgery carrying a spent nonce is still a
         counted `signature` refusal, never laundered into a not-counted one."""
@@ -369,7 +405,7 @@ class TestRefusals(Base):
         """A spend that fails (a full disk) makes verify fail with that error, accepted record or refused one, and is
         never tried a second time."""
         class Failing(Spender):
-            def __call__(self, nonce):
+            def __call__(self, nonce, exp):
                 self.calls += 1
                 raise OSError("no space left")
         for label, rec, kw in (("accepted", self.forge(), {}), ("signature", self.forge(bad_sig=True), {}),

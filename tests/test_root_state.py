@@ -28,7 +28,7 @@ class NonceTest(StateCase):
     def test_nonce_spent_once(self):
         self.assertTrue(state.spend_nonce(self.ctx, NONCE))
         self.assertFalse(state.spend_nonce(self.ctx, NONCE))
-        self.assertTrue(state.spend_nonce(self.ctx, "B" * 43))
+        self.assertTrue(state.spend_nonce(self.ctx, "B" * 42 + "A"))
         name = hashlib.sha256(NONCE.encode()).hexdigest()[:32]
         self.assertTrue((self.ctx.lib / "nonces" / name).is_file())
 
@@ -41,8 +41,40 @@ class NonceTest(StateCase):
         state.prune_nonces(self.ctx)
         self.assertTrue(state.spend_nonce(self.ctx, NONCE))
 
+    def test_kept_a_day_after_a_later_exp(self):
+        """0.8.1 re-check finding 2: a nonce whose record expires later than now is kept until a day after that exp."""
+        exp = int(self.t0) + 2 * 86400
+        state.spend_nonce(self.ctx, NONCE, exp)
+        self.at(2 * 86400 + 86400)
+        state.prune_nonces(self.ctx)
+        self.assertFalse(state.spend_nonce(self.ctx, NONCE))
+        self.at(2 * 86400 + 86401)
+        state.prune_nonces(self.ctx)
+        self.assertTrue(state.spend_nonce(self.ctx, NONCE))
+
+    def test_exp_in_the_past_or_not_an_int_keeps_a_day(self):
+        for exp in (int(self.t0) - 600, None, True, float(self.t0 + 9 * 86400), str(int(self.t0) + 9 * 86400)):
+            with self.subTest(exp=exp):
+                self.at(0)
+                state.spend_nonce(self.ctx, NONCE, exp)
+                self.at(86401)
+                state.prune_nonces(self.ctx)
+                self.assertTrue(state.spend_nonce(self.ctx, NONCE))
+                self.at(2 * 86402)
+                state.prune_nonces(self.ctx)
+
+    def test_far_exp_is_capped_and_still_kept(self):
+        """An exp up to 2^53 - 1 is a valid shape; the file time stops at 2^32 (2106), so no clock or file system
+        overflows, and the nonce is still remembered until then."""
+        name = hashlib.sha256(NONCE.encode()).hexdigest()[:32]
+        state.spend_nonce(self.ctx, NONCE, 2 ** 53 - 1)
+        self.assertEqual(os.stat(self.ctx.lib / "nonces" / name).st_mtime, state.NONCE_KEEP_LIMIT)
+        self.at(30 * 365 * 86400)
+        state.prune_nonces(self.ctx)
+        self.assertFalse(state.spend_nonce(self.ctx, NONCE))
+
     def test_bad_nonce_refused(self):
-        for nonce in ("A" * 42, "../" + "A" * 40, None):
+        for nonce in ("A" * 42, "../" + "A" * 40, None, "A" * 42 + "B"):
             with self.subTest(nonce=nonce), self.assertRaises(ValueError):
                 state.spend_nonce(self.ctx, nonce)
 

@@ -3,9 +3,12 @@
 `verify()` reads no file, clock or command. The runner gives it the record, the registered keys, the config, the
 installed list's hash, the time, the key's stored counter and `spend` (state.spend_nonce bound to its ctx), and gets
 back `Verified` or a `Refusal` (or `canon.Malformed` for a record without exactly the expected shape, which the runner
-files as garbage). `spend` is its one side effect: it is called exactly once for every record whose nonce has the right
-shape, whatever verify answers, and never for one whose nonce does not (re-check R1, 2026-11-11). A record root refused
-can then never run later, sent again intact or not. Its answer is read at one fixed point only (step 6 below).
+files as garbage). `spend` is its one side effect: it is called exactly once for every record that reaches verify with
+a nonce of the right shape, whatever verify answers, and never for one whose nonce does not (re-check R1, 2026-11-11).
+It gets the record's exp too, and the runner keeps the nonce until a day after the later of now and that exp (0.8.1
+re-check, finding 2). A record root refused here can then never run later, sent again intact or not, even one whose exp
+was too far ahead when it was refused. Entries the runner quarantines before verify (the file rules, the strict parse)
+spend nothing and get no result. Its answer is read at one fixed point only (step 6 below).
 
 The order of the checks is the plan's D10 as amended after the Z2a hostile review, and it matters:
 - the key and the device first, so a record that names no registered key (or another device) is garbage and never
@@ -186,24 +189,28 @@ def _shape(rec):
 def verify(rec, keys, cfg, list_sha, now, counter, spend):
     """Check one run or check-key record (D10, amended). keys: registered keys by ref; cfg: config.Config; list_sha:
     the installed actions.json's sha256 hex; now: unix seconds; counter: the key's stored sign counter (None before its
-    first use, read as 0); spend(nonce) -> bool: marks the nonce used and says whether this was the first time (the
-    runner passes state.spend_nonce bound to its ctx).
+    first use, read as 0); spend(nonce, exp) -> bool: marks the nonce used, to be kept until a day after the later of
+    now and exp (the record's exp when it is an int, else None), and says whether this was the first time (the runner
+    passes state.spend_nonce bound to its ctx).
 
     The nonce's shape is checked first. A record whose nonce has the wrong shape raises canon.Malformed and spends
     nothing (it can name no run). For any other record spend is called exactly once, whatever the answer: Verified, a
     Refusal, canon.Malformed for the rest of the record, or an error. So a record that was refused, even one the gate
-    spoiled on purpose before sending it again intact, can never run later (re-check R1). An error raised by spend
-    itself is raised as it is, and spend is not called a second time. Returns Verified; raises Refusal or Malformed."""
+    spoiled on purpose before sending it again intact, or one whose exp was too far ahead, can never run later
+    (re-check R1; 0.8.1 re-check, finding 2). An error raised by spend itself is raised as it is, and spend is not
+    called a second time. Returns Verified; raises Refusal or Malformed."""
     nonce = rec.get("nonce") if isinstance(rec, dict) else None
     if not canon.valid_nonce(nonce):
         raise canon.Malformed("no well-formed nonce")
+    exp = rec.get("exp")
+    exp = exp if type(exp) is int else None
     called, first = False, None
 
     def spend_once():
         nonlocal called, first
         if not called:
             called = True
-            first = spend(nonce)
+            first = spend(nonce, exp)
         return first
     try:
         return _checks(rec, keys, cfg, list_sha, now, counter, spend_once)

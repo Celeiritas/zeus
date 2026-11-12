@@ -17,6 +17,7 @@ from . import canon
 
 HOUR_S = 3600
 DAY_S = 86400
+NONCE_KEEP_LIMIT = 2 ** 32             # no nonce file time past 2106-02-07 (a record expiring later is never fresh before)
 WINDOWED = ("file-rules", "watcher-failed")   # D8: one line an hour; later ones are folded into the next line
 MAX_KEPT = 100                                 # refusal times kept per class: enough for any "3 in an hour"
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -107,13 +108,17 @@ def _action_id(action_id):
 # --- nonces --------------------------------------------------------------------------------------------------------
 
 def _nonce_path(ctx, nonce):
-    if not isinstance(nonce, str) or not canon.NONCE_RE.fullmatch(nonce):
+    if not canon.valid_nonce(nonce):
         raise canon.Malformed("bad nonce")
     return ctx.lib / "nonces" / hashlib.sha256(nonce.encode("ascii")).hexdigest()[:32]
 
 
-def spend_nonce(ctx, nonce):
-    """Mark a nonce used: True the first time, False ever after (until pruned a day later, long after its exp)."""
+def spend_nonce(ctx, nonce, exp=None):
+    """Mark a nonce used: True the first time, False until it is pruned. exp is the record's expiry (unix seconds; None,
+    or anything but an int, for a record without one). The nonce is kept until a day after the later of the moment it
+    was spent and exp, so a record refused because its exp was too far ahead cannot run once that exp comes near:
+    keeping it one day only let a lying gate hand the same signed record in again a day later (0.8.1 re-check,
+    finding 2)."""
     path = _nonce_path(ctx, nonce)
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW | _CLOEXEC, 0o600)
@@ -124,13 +129,16 @@ def spend_nonce(ctx, nonce):
     finally:
         os.close(fd)
     t = ctx.now()
-    os.utime(path, (t, t))     # the file's time is when it was spent, by root's clock
+    if type(exp) is int and exp > t:
+        t = max(t, min(exp, NONCE_KEEP_LIMIT))
+    os.utime(path, (t, t))     # the file's time is when it was spent by root's clock, or its record's exp if later
     _fsync_dir(path.parent)
     return True
 
 
 def prune_nonces(ctx):
-    """Forget nonces spent more than a day ago: their records expired long before (exp is at most 180 s away)."""
+    """Forget a nonce a day after its file's time (when it was spent, or its record's exp if later): by then its record
+    expired a day ago and can never be fresh again."""
     cutoff = ctx.now() - DAY_S
     with os.scandir(ctx.lib / "nonces") as it:
         for e in it:
