@@ -28,6 +28,8 @@ REMIND_S = 300
 SYSTEMCTL = "/usr/bin/systemctl"
 TIMER = "zeus-root-reach@%s.timer"
 TIMER_TIMEOUT_S = 30
+# canon.require wants exactly these keys, so a wait left open by an older zeus-root would not read back after an
+# upgrade that changes them (boot and every runner start then stop on state.Broken): a change ships with a migration.
 DOC_SCHEMA = {"run": str, "action": str, "undo": str, "node_id": str, "login": str, "deadline": (int, float),
               "remind_at": (int, float), "game_wait_start": (int, float, type(None)), "pending": dict,
               "final": (str, type(None))}
@@ -65,16 +67,22 @@ def _save(ctx, doc):
     state.write_file(_path(ctx, doc["run"]), canon.canonical(doc) + b"\n", 0o600)
 
 
-def waiting(ctx):
-    """[(path, doc)] of every run that waits for a check-in, oldest deadline first."""
-    out = []
+def _names(ctx):
+    """The run id of every wait in reach/ by its file name alone (r + 20 hex + .json, a plain file): nothing is
+    parsed, so a file that does not read back cannot keep the others' timers from starting at boot."""
     with os.scandir(_folder(ctx)) as it:
-        for e in it:
-            name = e.name
-            if name.endswith(".json") and logs.RUN_RE.fullmatch(name[:-5]) and e.is_file(follow_symlinks=False):
-                doc = _load(_folder(ctx) / name)
-                if doc is not None:
-                    out.append((_folder(ctx) / name, doc))
+        return sorted(e.name[:-5] for e in it if e.name.endswith(".json") and logs.RUN_RE.fullmatch(e.name[:-5])
+                      and e.is_file(follow_symlinks=False))
+
+
+def waiting(ctx):
+    """[(path, doc)] of every run that waits for a check-in, oldest deadline first. Raises state.Broken on the first
+    file that does not read back."""
+    out = []
+    for run in _names(ctx):
+        doc = _load(_path(ctx, run))
+        if doc is not None:
+            out.append((_path(ctx, run), doc))
     return sorted(out, key=lambda pd: (pd[1]["deadline"], pd[1]["run"]))
 
 
@@ -237,7 +245,8 @@ def put_back(ctx, path, doc, loaded, reason):
 
 def due(ctx, loaded):
     """Every waiting check whose deadline passed (a lost timer), as a tick would; the runner calls it under its lock
-    before it takes the inbox. Returns how many put-backs ran."""
+    before it takes the inbox. Returns how many put-backs ran. A reach file that does not read back raises
+    state.Broken: the start fails (Elaia's watch shows it) and every other wait's own timer still ticks."""
     return sum(1 for path, doc in waiting(ctx) if _handle(ctx, path, doc, loaded, False))
 
 
@@ -282,24 +291,36 @@ def tick(ctx, run):
     return 0
 
 
+def _title_of(ctx, loaded, run):
+    """The action's title for a run's wait, or the run id when its file does not read back (or is gone)."""
+    try:
+        doc = _load(_path(ctx, run))
+    except state.Broken:
+        doc = None
+    return _title(loaded, doc["action"]) if doc is not None else run
+
+
 def boot(ctx):
-    """zeus-root boot, once at every boot. First, without lib/lock, every wait gets its timer started again, so a
-    tick comes whatever this boot finds: root's own files broken or the lock held elsewhere (review S3; reading the
-    reach files needs no lock, their writes are atomic). Then, under lib/lock: leftovers in work/ to quarantine (their
-    nonce spent); every wait whose file says final is finished; every wait whose deadline passed is put back at once
-    ("no check-in, after a restart": no check-in could be trusted across the restart, and no game runs this early).
-    Root's own files broken: no put-back runs, the ticks put back once they are fixed. Returns the exit code: 1 when
-    the lock was held elsewhere or root's files are broken."""
+    """zeus-root boot, once at every boot. First, without lib/lock, every wait gets its timer started again by its
+    file name, so a tick comes whatever this boot finds: root's own files broken, the lock held elsewhere (review S3),
+    a wait that says final (its tick finishes it), or a reach file that does not read back (its own tick fails, the
+    others put back). Then, under lib/lock, with root's files loaded again (they may have broken while the timers
+    started; review re-check M1): leftovers in work/ to quarantine (their nonce spent); every wait whose file says
+    final is finished; every wait whose deadline passed is put back at once ("no check-in, after a restart": no
+    check-in could be trusted across the restart, and no game runs this early). Root's own files broken: no put-back
+    runs, the ticks put back once they are fixed. Returns the exit code: 1 when the lock was held elsewhere or root's
+    files are broken; raises state.Broken on a reach file that does not read back."""
     from . import runner
-    loaded, problem = runner.load_or_problem(ctx)
-    for _, doc in waiting(ctx):
-        if doc["final"] is None and not _timer(ctx, "start", doc["run"]):
+    early, _ = runner.load_or_problem(ctx)          # only for the titles of watcher-failed lines
+    for run in _names(ctx):
+        if not _timer(ctx, "start", run):
             logs.attention(ctx, "watcher-failed", "The reach check's timer for %s did not start again after a "
                            "restart; it is put back at the next start unless your phone checks in"
-                           % _title(loaded, doc["action"]), doc["run"])
+                           % _title_of(ctx, early, run), run)
     with _locked_or_none(ctx) as held:
         if not held:
             return 1
+        loaded, problem = runner.load_or_problem(ctx)
         runner.leftovers(ctx, loaded)
         if problem is not None:
             logs.attention(ctx, "file-rules", "Root's own files break the ownership or mode rules (%s); nothing runs "

@@ -205,6 +205,8 @@ class FinishTest(ReachCase):
                             runner.start(self.ctx)
                     self.at(700)                          # past the deadline: a put-back would follow if it could
                     self.recover(how, run)
+                    if how == "boot":
+                        self.check_kept(rec, run)         # boot itself finished it, not the start below (re-check)
                     if how != "start":
                         self.start()                      # the check-in left in work/ is a leftover now
                     self.check_kept(rec, run)
@@ -227,7 +229,41 @@ class FinishTest(ReachCase):
                          ("superseded", CLOSE + " was followed by a newer run, so it is not put back."))
         self.assertNotIn("u" + run[1:], self.ran())
 
+    def test_a_tick_finishes_a_final_file_while_root_files_are_broken(self):
+        """A file that says final needs none of root's files: the tick finishes it, with no file-rules line."""
+        rec, run = self.closed()
+        self.at(120)
+        self.put(self.close.check_in(run))
+        with self.kill_once(logs, "append_run", lambda ctx, line: "reach" in line):
+            with self.assertRaises(Killed):
+                runner.start(self.ctx)
+        os.chmod(self.ctx.etc / "config.json", 0o666)
+        self.at(700)
+        self.tick(run)
+        self.check_kept(rec, run)
+        self.assertEqual(self.kinds(), [])
+
+    def test_a_check_in_meets_a_final_file_while_root_files_are_broken(self):
+        """With root's files broken a start skips due(), so check_in itself meets the final file and finishes it as
+        it says: superseded refuses the check-in (one garbage line), kept accepts it."""
+        for final, state_word, extra in (("superseded", "superseded", ["check-in-refused"]), ("kept", "done", [])):
+            with self.subTest(final=final):
+                self.setUp()
+                _, run = self.closed()
+                doc = json.loads(self.reach_file(run).read_bytes())
+                doc["final"] = final
+                state.write_file(self.reach_file(run), json.dumps(doc).encode(), 0o600)
+                os.chmod(self.ctx.etc / "config.json", 0o666)
+                self.at(30)
+                self.put(self.close.check_in(run))
+                self.start()
+                self.assertEqual(logs.read_result(self.ctx, run)["state"], state_word)
+                self.assertEqual([x.get("reach") or x.get("reason") for x in self.lines(run)], [final] + extra)
+                self.assertFalse(self.reach_file(run).exists())
+
     def test_a_check_in_for_a_superseded_finish_is_refused(self):
+        """With root's files in order the start's due() finishes the file before the inbox is read, so the check-in
+        finds no wait."""
         _, run = self.closed()
         doc = json.loads(self.reach_file(run).read_bytes())
         doc["final"] = "superseded"
@@ -442,6 +478,71 @@ class BootTest(ReachCase):
         self.at(700)
         self.tick(run)
         self.assertEqual(logs.read_result(self.ctx, run)["state"], "undone")
+
+    def test_files_that_break_while_boot_restarts_the_timers_hold_the_put_back(self):
+        """Re-check M1: boot loads root's files again once it holds lib/lock; files that broke while it restarted the
+        timers (or waited for the lock) run nothing, not even a put-back."""
+        _, run = self.closed()
+        real, broke = self.ctx.cmd, []
+
+        def cmd(argv, timeout):
+            if argv[1:2] == ["start"] and not broke:
+                os.chmod(self.ctx.etc / "config.json", 0o666)
+                broke.append(1)
+            return real(argv, timeout)
+        self.ctx.cmd = cmd
+        self.at(700)
+        self.assertEqual(reach.boot(self.ctx), 1)
+        self.ctx.cmd = real
+        self.waits(run)
+        self.assertEqual(self.ran(), [run])
+        self.assertEqual(self.kinds(), ["file-rules"])
+        os.chmod(self.ctx.etc / "config.json", 0o644)
+        self.at(760)
+        self.tick(run)
+        self.assertEqual(logs.read_result(self.ctx, run)["state"], "undone")
+
+    def test_one_unreadable_reach_file_still_restarts_the_other_timers(self):
+        """Re-check SF1: boot starts a timer for every wait by its file name, before anything is parsed; the
+        unreadable file then stops boot (and its own tick fails), while every other wait keeps its heartbeat."""
+        _, run = self.closed()
+        bad = "r" + "f" * 20
+        path = self.ctx.lib / "reach" / (bad + ".json")
+        path.write_bytes(b'{"run": "%s"}' % bad.encode())
+        os.chmod(path, 0o600)
+        self.at(100)
+        with self.assertRaises(state.Broken):
+            reach.boot(self.ctx)
+        self.assertEqual((self.timer("start", run), self.timer("start", bad)), (2, 1))
+        self.at(700)
+        self.tick(run)
+        self.assertEqual(logs.read_result(self.ctx, run)["state"], "undone")
+        with self.assertRaises(state.Broken):
+            reach.tick(self.ctx, bad)
+
+    def test_a_final_file_gets_its_timer_at_boot(self):
+        """Re-check note 3: a wait that says final also gets its timer at boot, so with lib/lock held at boot (or
+        root's files broken) its tick finishes it within the minute, not at the next runner start."""
+        rec, run = self.closed()
+        self.at(120)
+        self.put(self.close.check_in(run))
+        real = logs.append_run
+
+        def append(ctx, line):
+            if "reach" in line:
+                raise Killed("kill before the line")
+            return real(ctx, line)
+        with mock.patch.object(logs, "append_run", append):
+            with self.assertRaises(Killed):
+                runner.start(self.ctx)
+        self.at(700)
+        with self.lock_held():
+            self.assertEqual(reach.boot(self.ctx), 1)
+        self.assertEqual(self.timer("start", run), 2)
+        self.tick(run)
+        self.assertEqual([(x["outcome"], x.get("reach")) for x in self.lines(run)], [("done", "kept")])
+        self.assertEqual(logs.read_result(self.ctx, run)["state"], "done")
+        self.assertEqual(self.ran(), [run])
 
     def test_boot_with_the_lock_held_restarts_the_timers(self):
         rec = Phone(self.ctx).record()
