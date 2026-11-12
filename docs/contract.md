@@ -6,7 +6,7 @@ What crosses Zeus's borders: the message Hermes drops, the record Zeus keeps, th
 ```json
 { "type": "deploy-request", "repo": "you/argus-ui", "sha": "<40 hex>", "previous": "<40 hex or null>",
   "subject": "Mentor: Learn phase", "version": "4.9.0", "checks": "success",
-  "changelog": ["- Learn cards …"], "seen": "2026-10-21T09:00:00-06:00" }
+  "changelog": ["- Learn cards …"], "seen": "2026-10-21T09:00:00+00:00" }
 ```
 | Field | Must be | Else |
 |---|---|---|
@@ -29,8 +29,8 @@ Any file that is not valid JSON, not an object, or larger than 64 KB is refused 
   "repo": "you/argus-ui", "sha": "<40 hex>", "previous": "<40 hex or null>",
   "subject": "Mentor: Learn phase", "version": "4.9.0", "checks": "success",
   "changelog": ["- Learn cards …"], "files": 12, "rules_changed": [],
-  "seen": "2026-10-21T09:00:00-06:00", "expires": "2026-10-24T09:00:00-06:00",
-  "verified": { "on_main": true, "at": "2026-10-21T09:00:12-06:00" },
+  "seen": "2026-10-21T09:00:00+00:00", "expires": "2026-10-24T09:00:00+00:00",
+  "verified": { "on_main": true, "at": "2026-10-21T09:00:12+00:00" },
   "approval": null, "deploy": null }
 ```
 - `action`: `deploy`, or `rollback` for a hand rollback (§4a).
@@ -43,7 +43,7 @@ Any file that is not valid JSON, not an object, or larger than 64 KB is refused 
 
 ## 3. `zeus status --json` (what the Throne plugin reads)
 ```json
-{ "zeus": "0.1.4", "at": "2026-10-21T09:05:00-06:00",
+{ "zeus": "0.1.4", "at": "2026-10-21T09:05:00+00:00",
   "line": "1 deploy waiting · argus-ui 4.8.0 live",
   "deployed": { "you/argus-ui": { "sha": "…", "version": "4.8.0", "at": "…", "approval": "…" }, "you/hermes": null },
   "queue": [ <pending records, newest first, expiry already applied> ],
@@ -100,7 +100,7 @@ Zeus never retries on his own. The run log says each step in a sentence (`zeus: 
 ## 4. The signed log line (`log/approvals-YYYY-MM.jsonl`)
 One JSON object per line, keys sorted. `sig` is HMAC-SHA256, hex, over the line's canonical JSON **without `sig`** (keys sorted, `,` and `:` separators, no spaces, UTF-8), keyed by `ZEUS_LOG_KEY` (`~/.config/zeus/secret.env`, mode 600, made by `zeus init`).
 ```json
-{ "t": "2026-10-21T09:05:00-06:00", "id": "20261021-090012-argus-ui-3fa9c1b", "action": "decline",
+{ "t": "2026-10-21T09:05:00+00:00", "id": "20261021-090012-argus-ui-3fa9c1b", "action": "decline",
   "repo": "you/argus-ui", "sha": "<40 hex>", "version": "4.9.0",
   "by": { "user": "<tailnet login or shell user>", "via": "elaia", "ip": "<address>" },
   "reason": "not-now", "janus": "not asked", "zeus": "0.1.4", "sig": "<64 hex>" }
@@ -233,13 +233,13 @@ One JSON object per try, readable by everyone on `{{SERVER}}`, so it holds no ke
 | `undone` | put back by itself, with a reason: no check-in · no check-in, after a restart · no check-in, after 15 minutes of game |
 | `superseded` | a pair's newer run replaced a waiting check |
 | `key-checked` | the Self-test's check of one key |
-| `refused` | with the reason and its class: **counted toward the pause** (bad signature, wrong origin, framed, UV missing, challenge mismatch); **not counted** (expired, used nonce); **garbage, counted apart** (unknown or revoked key, wrong device, malformed); **other** (counter, BE changed, list changed, file rules, Serve mapping changed, rate limit, paused, game running with the matching process named, busy) |
+| `refused` | with the reason and its class: **counted toward the pause** (bad signature, wrong origin, framed, UV missing, challenge mismatch); **not counted** (expired, used nonce); **garbage, counted apart** (unknown or revoked key, wrong device, malformed); **other** (counter, BE changed, list changed, file rules, Serve mapping changed, rate limit, paused, game running with the matching process named, busy; some of these write an attention line, see 8f) |
 - `reach` is `kept`, `undone` or absent. `prev` makes a hash chain: a changed or removed line shows.
 - **The whole assertion is kept**, so `zeus-root verify-log` re-checks every signature against the registered public keys (found by `key.ref`), not just the chain. Unlike Zeus's HMAC log (§4), only the phone could have made those signatures. The assertion holds neither the key id nor the user handle.
 - The quarantine writes one line per entry: its type, size, owner and the checksum of its first 16 KB.
 
 ### 8f. The attention line (`/var/log/zeus-root/attention.jsonl`, root 644)
-One line for each of: a put-back by itself, a failed undo, a restart that did not come back, a pause, a quarantine flood, a refusal of the class counted toward the pause (8e), a refusal for the counter or a changed BE flag (signs of a copied key), a refusal because the list changed, a refusal because the Serve mapping changed, and the watcher unit failing. A refusal in the classes **garbage** or **not counted** never writes an attention line (that would let anyone who can send garbage make the phone buzz again and again); it goes to the log only, and at 20 garbage records in an hour Elaia shows the owner one warning (a warning on the page, not a buzz). The rest of the **other** class (file rules, rate limit, paused, game, busy) goes to the log only; a pause writes its own line. Decided by the owner on 2026-11-11 (R15 #9). Elaia's side turns each new line into one `broke` event: a buzz of the kind *Something stopped working*, and Argus glares. The words come from root, one sentence each, for example:
+One line for each of: a put-back by itself, a failed undo, a restart that did not come back, a pause, a quarantine flood, a refusal of the class counted toward the pause (8e), a refusal for the counter or a changed BE flag (signs of a copied key), a refusal because the list changed, a refusal because the Serve mapping changed, a refusal because an inbox entry breaks the ownership and mode rules (at most one line an hour for that kind; later ones in the hour are counted in that line), and the watcher unit failing. A refusal in the classes **garbage** or **not counted** never writes an attention line (that would let anyone who can send garbage make the phone buzz again and again); it goes to the log only, and at 20 garbage records in an hour Elaia shows the owner one warning (a warning on the page, not a buzz). The rest of the **other** class goes to the log only: a refusal for a limit reached is shown on the key page where the owner pressed (only his own logins and devices get that far); a refusal while paused is counted and shown with the pause, which already wrote its own line; game and busy are expected. The rule behind this list (the owner, 2026-11-11): a line must bring the owner new information and call for an action of his, and only the cause writes a line, never each refusal that follows from it. Elaia's side turns each new line into one `broke` event: a buzz of the kind *Something stopped working*, and Argus glares. The words come from root, one sentence each, for example:
 - `Close the media ports was put back: your phone did not check in`
 - `Zeus refused 3 tries`
 - `Restart Bluetooth: the service did not come back up`

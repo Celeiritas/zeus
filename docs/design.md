@@ -77,8 +77,8 @@ Hermes's `hermes-github` writes `<repo>-<sha7>.json` into `~/.local/share/zeus/r
   "repo": "you/argus-ui", "sha": "<40 hex>", "previous": "<40 hex>",
   "subject": "Mentor: Learn phase", "version": "4.9.0", "checks": "success",
   "changelog": ["- Learn cards …"], "files": 12, "rules_changed": [],
-  "seen": "2026-10-21T09:00:00-06:00", "expires": "2026-10-24T09:00:00-06:00",
-  "verified": { "on_main": true, "at": "2026-10-21T09:00:12-06:00" },
+  "seen": "2026-10-21T09:00:00+00:00", "expires": "2026-10-24T09:00:00+00:00",
+  "verified": { "on_main": true, "at": "2026-10-21T09:00:12+00:00" },
   "approval": null, "deploy": null }
 ```
 - `verified.on_main` is **Zeus's own check**: `git fetch origin main` into the clone (or a bare mirror before the first deploy), then `git merge-base --is-ancestor <sha> origin/main`. Not on `main` → state `refused`, never shown as approvable. `files` and `rules_changed` come from `git diff --stat previous..sha` in that same fetch.
@@ -466,7 +466,7 @@ Every script sits in `actions/` and nowhere else; nothing above is a link; nothi
 9. The result and one log line are written; the page says Done. "Still answers this phone" is all the check-in proves.
 
 ### 16.5 What is refused
-A request that is not a POST from the key page's own origin; a login that is not an owner; an unknown or revoked key, a key for another action or device; a framed page; user verification missing; a stale, used or expired nonce; a changed list or script; a counter that is not larger when either counter is not zero (16.4 step 6); Serve's mapping changed, or a Tailscale operator set; files that break the ownership and mode rules; a game running (there is no "do it anyway"); another run holding the lock (30 s, then busy); a paused system; a limit reached. Three failed signatures of a registered key in an hour pause every root action for an hour. Unknown or malformed records are "garbage": logged, counted apart, never a pause. The log names the class of every refusal.
+A request that is not a POST from the key page's own origin; a login that is not an owner; an unknown or revoked key, a key for another action or device; a framed page; user verification missing; a stale, used or expired nonce; a changed list or script; a counter that is not larger when either counter is not zero (16.4 step 6); Serve's mapping changed, or a Tailscale operator set; files that break the ownership and mode rules; a game running (there is no "do it anyway"); another run holding the lock (30 s, then busy); a paused system; a limit reached. Three failed signatures of a registered key in an hour pause every root action for an hour. Unknown or malformed records are "garbage": logged, counted apart, never a pause. The log names the class of every refusal; which refusals also write an attention line (a buzz) is in contract 8f.
 
 ### 16.6 The first list
 | id | Kind | What | Undo | Game check | Can cut you off |
