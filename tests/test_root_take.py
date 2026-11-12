@@ -137,12 +137,78 @@ class QuarantineTest(TakeCase):
     def test_garbage_writes_no_attention_line(self):
         self.put("x", b'{"type":')
         path = take.take(self.ctx, self.inbox, "run").paths[0]
-        self.assertIsInstance(take.open_entry(self.ctx, path), bytes)
-        take.quarantine(self.ctx, path, None)
+        data = take.open_entry(self.ctx, path)
+        self.assertIsInstance(data, bytes)
+        take.quarantine(self.ctx, path, None, data=data)
         line = self.log_lines()[0]
         self.assertEqual((line["class"], line["reason"], line["entry"]["type"], line["entry"]["size"]),
                          ("garbage", "malformed", "file", 8))
         self.assertFalse((self.ctx.log / "attention.jsonl").exists())
+
+    def fail_open_in_work(self, exc):
+        """os.open raises exc for entries in run/work/ only (the log files still open)."""
+        real, work = os.open, str(self.ctx.run / "work")
+
+        def fake(path, flags, *a, **kw):
+            if str(path).startswith(work):
+                raise exc
+            return real(path, flags, *a, **kw)
+        return mock.patch.object(take.os, "open", side_effect=fake)
+
+    def test_malformed_checksum_is_of_the_bytes_root_read(self):
+        """Hostile review finding 2: the gate rewrites the file through a handle it kept, after root read it. The line's
+        checksum is of what root read and refused, and nothing is opened a second time."""
+        self.put("x", b'{"first":')
+        path = take.take(self.ctx, self.inbox, "run").paths[0]
+        data = take.open_entry(self.ctx, path)
+        path.write_bytes(b'{"rewritten by the gate":')
+        with self.fail_open_in_work(AssertionError("opened again")):
+            take.quarantine(self.ctx, path, None, data=data)
+        import hashlib
+        self.assertEqual(self.log_lines()[0]["entry"]["sha256_16k"], hashlib.sha256(b'{"first":').hexdigest())
+
+    def test_malformed_needs_the_bytes_and_leftover_none(self):
+        self.put("x")
+        path = take.take(self.ctx, self.inbox, "run").paths[0]
+        with self.assertRaises(ValueError):
+            take.quarantine(self.ctx, path, None)
+        with self.assertRaises(ValueError):
+            take.quarantine(self.ctx, path, None, reason="leftover", data=b"{}")
+        with self.assertRaises(ValueError):
+            take.quarantine(self.ctx, path, None, reason="other-word", data=b"{}")
+        self.assertTrue(path.exists())
+
+    def test_leftover_is_quarantined_with_its_checksum(self):
+        self.put("a", b'{"left":1}')
+        path = take.take(self.ctx, self.inbox, "run").paths[0]
+        for left in take.leftovers(self.ctx):
+            take.quarantine(self.ctx, left, None, reason="leftover")
+        line = self.log_lines()[0]
+        import hashlib
+        self.assertEqual((line["class"], line["reason"], line["entry"]["type"], line["entry"]["sha256_16k"]),
+                         ("other", "leftover", "file", hashlib.sha256(b'{"left":1}').hexdigest()))
+        self.assertFalse(path.exists())
+        self.assertEqual(take.leftovers(self.ctx), [])
+        self.assertFalse((self.ctx.log / "attention.jsonl").exists())
+
+    def test_leftover_that_will_not_open_never_stops_the_start(self):
+        """Hostile review finding 2: the gate holds a write lease on a leftover, so opening it fails (EWOULDBLOCK).
+        The entry still goes to quarantine, with a null checksum, and nothing is raised."""
+        self.put("a")
+        path = take.take(self.ctx, self.inbox, "run").paths[0]
+        with self.fail_open_in_work(BlockingIOError(11, "Resource temporarily unavailable")):
+            take.quarantine(self.ctx, path, None, reason="leftover")
+        line = self.log_lines()[0]
+        self.assertEqual((line["reason"], line["entry"]["type"], line["entry"]["sha256_16k"]),
+                         ("leftover", "file", None))
+        self.assertEqual(take.quarantine_count(self.ctx), 1)
+
+    def test_regular_file_that_will_not_open_is_type_file(self):
+        self.put("x")
+        path = take.take(self.ctx, self.inbox, "run").paths[0]
+        with self.fail_open_in_work(BlockingIOError(11, "Resource temporarily unavailable")):
+            bad = take.open_entry(self.ctx, path)
+        self.assertEqual((bad.type, bad.why, bad.sha256_16k), ("file", "would not open", None))
 
     def test_quarantine_a_link_and_a_folder(self):
         os.symlink("/etc/passwd", self.inbox / "link")

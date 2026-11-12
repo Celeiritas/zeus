@@ -1,18 +1,22 @@
 """Verify the phone's WebAuthn assertion for one record (contract §8b, design §16.4 step 6, W3C WebAuthn Level 3 §7.2).
 
-`verify()` is pure: it reads no file, clock or command. The runner gives it the record, the registered keys, the
-config, the installed list's hash, the time and the key's stored counter, and gets back `Verified` or a `Refusal`
-(or `canon.Malformed` for a record without exactly the expected shape, which the runner files as garbage).
+`verify()` reads no file, clock or command. The runner gives it the record, the registered keys, the config, the
+installed list's hash, the time, the key's stored counter and `spend` (state.spend_nonce bound to its ctx), and gets
+back `Verified` or a `Refusal` (or `canon.Malformed` for a record without exactly the expected shape, which the runner
+files as garbage). `spend` is its one side effect, and it is called at most once, at one fixed point.
 
-The order of the checks is the plan's D10, and it matters:
+The order of the checks is the plan's D10 as amended after the Z2a hostile review, and it matters:
 - the key and the device first, so a record that names no registered key (or another device) is garbage and never
   counts toward the pause;
 - then the client data, the RP ID hash and UP+UV, which count toward the pause for a registered key (a look-alike
   page or a lying gate);
-- then the signature, and only after it the counter and the BE flag, so junk that names a real key can never make a
-  "your key may be copied" buzz (Review Focus 2; the private design's 6.3 lists the counter first);
-- then freshness (a late resend with a good signature is not counted), then the list (a yes given before the list
-  changed).
+- then the signature, so junk that names a real key can never make a "your key may be copied" buzz (Review Focus 2;
+  the private design's 6.3 lists the counter first);
+- then freshness and the spent nonce: a genuine record sent late or sent again is `expired` or `used-nonce`, not
+  counted and never a buzz (6.3 M1). The nonce is spent here, before anything that can still refuse, so every genuine
+  fresh record is answered exactly once whatever comes after;
+- only then the counter and the BE flag (a genuine, fresh, never-seen record whose counter did not go up is a sign of
+  a copied key), then the list (a yes given before the list changed).
 
 Authenticator data is sliced by position, never parsed as CBOR: an assertion's is exactly 37 bytes with AT and ED clear.
 `cryptography` is imported only where a signature is checked, so the parsing here runs on any Python.
@@ -50,6 +54,7 @@ REFUSALS = {
     "be-changed": ("other", "copied-key",
                    "This key's backup setting changed since it was registered, so it may have been copied. Nothing ran."),
     "expired": ("not-counted", None, "The request was too old or dated ahead; try again. Nothing ran."),
+    "used-nonce": ("not-counted", None, "This request was already answered once. Nothing ran again."),
     "list-changed": ("other", "list-changed", "The list of actions changed after you tapped; open it again. Nothing ran."),
 }
 
@@ -113,30 +118,46 @@ def parse_client(raw, typ):
     return obj
 
 
-def verify_sig(alg, spki, auth, client, sig):
-    """True when sig is the key's signature over authenticatorData || SHA-256(clientDataJSON).
-    ES256: a P-256 key and a DER signature. RS256: PKCS#1 v1.5 with SHA-256 and a modulus of at least 2048 bits.
-    Any other algorithm, a key of another type or size, or an unreadable key is False."""
-    from cryptography.exceptions import InvalidSignature
-    from cryptography.hazmat.primitives import hashes
-    from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
+def _public_key(alg, spki):
+    """The public key when spki is a DER SubjectPublicKeyInfo that fits alg, else None. ES256: a P-256 key. RS256: an
+    RSA key of at least 2048 bits with an odd exponent of at least 3. Any other algorithm, key type or size, a key
+    type `cryptography` does not know (UnsupportedAlgorithm), or bytes that are no key give None."""
+    from cryptography.exceptions import UnsupportedAlgorithm
+    from cryptography.hazmat.primitives.asymmetric import ec, rsa
     from cryptography.hazmat.primitives.serialization import load_der_public_key
     try:
         pub = load_der_public_key(bytes(spki))
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, UnsupportedAlgorithm):
+        return None
+    if alg == ES256 and isinstance(pub, ec.EllipticCurvePublicKey) and isinstance(pub.curve, ec.SECP256R1):
+        return pub
+    if alg == RS256 and isinstance(pub, rsa.RSAPublicKey) and pub.key_size >= RSA_MIN_BITS:
+        e = pub.public_numbers().e
+        if e >= 3 and e % 2 == 1:
+            return pub
+    return None
+
+
+def key_fits(alg, spki):
+    """True when spki loads as a public key that fits alg (config.load_keys refuses a key that does not)."""
+    return _public_key(alg, spki) is not None
+
+
+def verify_sig(alg, spki, auth, client, sig):
+    """True when sig is the key's signature over authenticatorData || SHA-256(clientDataJSON).
+    ES256: a DER ECDSA signature. RS256: PKCS#1 v1.5 with SHA-256. A key that does not fit alg is False."""
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec, padding
+    pub = _public_key(alg, spki)
+    if pub is None:
         return False
     msg = bytes(auth) + hashlib.sha256(bytes(client)).digest()
     try:
         if alg == ES256:
-            if not isinstance(pub, ec.EllipticCurvePublicKey) or not isinstance(pub.curve, ec.SECP256R1):
-                return False
             pub.verify(bytes(sig), msg, ec.ECDSA(hashes.SHA256()))
-        elif alg == RS256:
-            if not isinstance(pub, rsa.RSAPublicKey) or pub.key_size < RSA_MIN_BITS:
-                return False
-            pub.verify(bytes(sig), msg, padding.PKCS1v15(), hashes.SHA256())
         else:
-            return False
+            pub.verify(bytes(sig), msg, padding.PKCS1v15(), hashes.SHA256())
     except (InvalidSignature, ValueError):
         return False
     return True
@@ -155,10 +176,12 @@ def _shape(rec):
     return raw
 
 
-def verify(rec, keys, cfg, list_sha, now, counter):
-    """Check one run or check-key record (D10). keys: registered keys by ref; cfg: config.Config; list_sha: the
-    installed actions.json's sha256 hex; now: unix seconds; counter: the key's stored sign counter (None before its
-    first use, read as 0). Returns Verified; raises Refusal, or canon.Malformed for a record of the wrong shape."""
+def verify(rec, keys, cfg, list_sha, now, counter, spend):
+    """Check one run or check-key record (D10, amended). keys: registered keys by ref; cfg: config.Config; list_sha:
+    the installed actions.json's sha256 hex; now: unix seconds; counter: the key's stored sign counter (None before its
+    first use, read as 0); spend(nonce) -> bool: marks the nonce used and says whether this was the first time (the
+    runner passes state.spend_nonce bound to its ctx). spend is called once, only for a record whose signature checks
+    out and that is fresh. Returns Verified; raises Refusal, or canon.Malformed for a record of the wrong shape."""
     raw = _shape(rec)
     auth = parse_auth_get(raw["authenticatorData"])
     # root's own challenge, from the record's fields and root's own origin (never one from the record)
@@ -196,15 +219,18 @@ def verify(rec, keys, cfg, list_sha, now, counter):
     # 5. the signature, before anything that could say "copied"
     if not verify_sig(key.alg, key.spki, raw["authenticatorData"], raw["clientDataJSON"], raw["signature"]):
         raise _refuse("signature")
-    # 6. the counter (either one not zero and the new one not larger) and the BE flag
+    # 6. freshness (now < exp <= now + 180), then the nonce, spent here: a genuine record sent late or sent again is
+    #    a resend, not counted and never a buzz, and everything after this point answers a record only once
+    if not now < rec["exp"] <= now + EXP_AHEAD_S:
+        raise _refuse("expired")
+    if not spend(rec["nonce"]):
+        raise _refuse("used-nonce")
+    # 7. the counter (either one not zero and the new one not larger) and the BE flag
     stored = 0 if counter is None else counter
     if (auth.count or stored) and auth.count <= stored:
         raise _refuse("counter")
     if auth.be != key.be:
         raise _refuse("be-changed")
-    # 7. freshness: now < exp <= now + 180 (the nonce is spent by the runner, right after this)
-    if not now < rec["exp"] <= now + EXP_AHEAD_S:
-        raise _refuse("expired")
     # 8. the list the owner saw is the list installed now
     if rec["list"] != list_sha:
         raise _refuse("list-changed")

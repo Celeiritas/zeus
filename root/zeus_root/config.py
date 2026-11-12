@@ -16,13 +16,15 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Optional
 
-from . import canon, logs, state
+from . import canon, logs, state, webauthn
 
 KINDS = ("check", "change", "put-back")
 SCRIPT_RE = re.compile(r"[A-Za-z0-9._-]+\.sh")
 HOST_RE = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 GAME_RE = re.compile(r"[A-Za-z0-9._+-]{1,64}")
 LOGIN_RE = re.compile(r"[!-~]{1,256}")               # printable ASCII, no spaces (a Tailscale login name)
+NODE_ID_RE = re.compile(r"[!-~]{1,128}")             # a Tailscale stable node id: never empty, no spaces
+FUNNEL_PORTS = (443, 8443, 10000)                     # the only ports Tailscale Funnel serves on (private design 10.3)
 ALGS = (-7, -257)                                     # ES256, RS256
 
 
@@ -87,8 +89,9 @@ def load_config(ctx):
     rp_id, keyport, gateport = obj["rp_id"], obj["keyport"], obj["gateport"]
     if not HOST_RE.fullmatch(rp_id):
         raise ConfigInvalid("config.json: rp_id is not a lowercase host name")
-    if not 0 < keyport <= 65535 or keyport == 443:
-        raise ConfigInvalid("config.json: keyport is 1..65535 and not 443 (every Serve path on 443 is one origin)")
+    if not 1025 <= keyport <= 65535 or keyport in FUNNEL_PORTS:
+        raise ConfigInvalid("config.json: keyport is 1025..65535 and not 8443 or 10000 (Funnel could put the key page "
+                            "on the internet; and every Serve path on 443 is one origin)")
     if not 0 < gateport < 1024 or gateport == keyport:
         raise ConfigInvalid("config.json: gateport is below 1024 (only systemd can bind it)")
     if obj["origin"] != "https://%s:%d" % (rp_id, keyport):
@@ -217,6 +220,10 @@ def _key(k):
         raise KeysInvalid("a key: ref does not match its id")
     if not canon.ID_RE.fullmatch(k["action"]) or k["alg"] not in ALGS or not LOGIN_RE.fullmatch(k["login"]):
         raise KeysInvalid("key " + k["ref"] + ": action, alg or login")
+    if not NODE_ID_RE.fullmatch(k["node_id"]):
+        raise KeysInvalid("key " + k["ref"] + ": node_id is empty or not printable")
+    if not webauthn.key_fits(k["alg"], spki):
+        raise KeysInvalid("key " + k["ref"] + ": the public key does not load or does not fit its alg")
     return Key(id=cid, ref=k["ref"], action=k["action"], user=user, node_id=k["node_id"], node_name=k["node_name"],
                login=k["login"], alg=k["alg"], spki=spki, be=k["be"], claim=k["claim"], words=k["words"],
                label=k["label"], made=k["made"], revoked=k["revoked"])

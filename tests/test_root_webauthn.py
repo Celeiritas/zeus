@@ -4,16 +4,21 @@ Three kinds of evidence:
 - the W3C WebAuthn Level 3 §16 test vectors (tests/root_fixtures/w3c-l3-vectors.json): the signature check alone,
   because those vectors carry no user verification and sign for https://example.org;
 - two real assertions from a Chromium virtual authenticator (chromium-es256.json, chromium-rs256.json): the whole
-  verify(), and the proof that the page's canonical JSON and challenge equal Python's;
+  verify(), a genuine record sent again, and the proof that the canonical JSON and challenge computed by the
+  generator's in-page function (make_chromium_fixtures.mjs, ceremony) equal Python's. That is parity with the
+  generator, not yet with the key page: Z4's page.js must reuse that function verbatim, and Z4 re-runs this test
+  against page.js;
 - forged records: the Chromium record with exactly one thing changed, signed again with a key made in the test, so
-  the one change is the only thing wrong.
+  the one change is the only thing wrong (once with an ES256 key, once with an RS256 key).
 """
 import copy
 import hashlib
 import json
 import unittest
 
-from tests.root_support import FIXTURES, make_key, need
+from tests.root_support import FIXTURES, Spender, make_key, need
+
+UNKNOWN_OID_SPKI = bytes.fromhex("3019300d06092b0601040182370101050003080030050203010001")
 
 from zeus_root import canon
 from zeus_root.config import Config
@@ -28,6 +33,41 @@ def _cfg(**over):
     doc.update(over)
     return Config(rp_id=doc["rp_id"], origin=doc["origin"], keyport=doc["keyport"], gateport=doc["gateport"],
                   page_dir=doc["page_dir"], games=tuple(doc["games"]), reach_game_max_s=doc["reach_game_max_s"])
+
+
+_SIGNERS = {}
+
+
+def cached_signer(alg):
+    """One Signer per algorithm for the whole run (an RSA key takes a moment to make)."""
+    if alg not in _SIGNERS:
+        _SIGNERS[alg] = Signer(alg)
+    return _SIGNERS[alg]
+
+
+def _der(tag, body):
+    n = len(body)
+    head = bytes([n]) if n < 0x80 else bytes([0x80 | ((n.bit_length() + 7) // 8)]) + n.to_bytes((n.bit_length() + 7) // 8, "big")
+    return bytes([tag]) + head + body
+
+
+def _der_int(v):
+    return _der(0x02, v.to_bytes(v.bit_length() // 8 + 1, "big"))
+
+
+def _rsa_spki(n, e):
+    """An RSA SubjectPublicKeyInfo encoded by hand, for exponents cryptography itself refuses to build (1, even)."""
+    alg = _der(0x30, _der(0x06, bytes.fromhex("2a864886f70d010101")) + b"\x05\x00")
+    return _der(0x30, alg + _der(0x03, b"\x00" + _der(0x30, _der_int(n) + _der_int(e))))
+
+
+def chromium_key(fx):
+    """The registered key of a Chromium fixture, as root would have stored it."""
+    reg = fx["registration"]
+    cid = canon.b64u_decode(reg["credentialId"])
+    reg_auth = canon.b64u_decode(reg["authenticatorData"])
+    return make_key(id=cid, ref=canon.key_ref(cid), user=canon.b64u_decode(reg["userId"]), alg=fx["alg"],
+                    spki=canon.b64u_decode(reg["publicKey"]), be=bool(reg_auth[32] & 0x08))
 
 
 class Signer:
@@ -55,17 +95,21 @@ FLAGS_OK = 0x01 | 0x04 | 0x08 | 0x10    # UP, UV, BE, BS: a synced passkey with 
 
 
 class Base(unittest.TestCase):
+    ALG = -7
+    FIXTURE = "chromium-es256.json"
+
     def setUp(self):
         need("cryptography")
         from zeus_root import webauthn
         self.w = webauthn
-        self.fx = _fixture("chromium-es256.json")
+        self.fx = _fixture(self.FIXTURE)
         self.cfg = _cfg()
         self.now = self.fx["record"]["exp"] - 60
-        self.signer = Signer()
+        self.signer = cached_signer(self.ALG)
         reg = self.fx["registration"]
         self.key = make_key(id=canon.b64u_decode(reg["credentialId"]), ref=canon.key_ref(canon.b64u_decode(reg["credentialId"])),
-                            user=canon.b64u_decode(reg["userId"]), alg=-7, spki=self.signer.spki, be=True)
+                            user=canon.b64u_decode(reg["userId"]), alg=self.ALG, spki=self.signer.spki, be=True)
+        self.spender = None
 
     def forge(self, client=None, flags=FLAGS_OK, count=7, rp_id="h.example", auth=None, bad_sig=False, **fields):
         """The Chromium record with `fields` changed in the record, `client` changed in the client data, and the
@@ -90,10 +134,12 @@ class Base(unittest.TestCase):
                 rec[k] = v
         return rec
 
-    def verify(self, rec, keys=None, cfg=None, list_sha=None, now=None, counter=None):
+    def verify(self, rec, keys=None, cfg=None, list_sha=None, now=None, counter=None, spend=None):
+        """verify() with a fresh Spender unless one is given; the one used is self.spender afterwards."""
         keys = {self.key.ref: self.key} if keys is None else keys
+        self.spender = Spender() if spend is None else spend
         return self.w.verify(rec, keys, cfg or self.cfg, list_sha or self.fx["record"]["list"],
-                             self.now if now is None else now, counter)
+                             self.now if now is None else now, counter, self.spender)
 
     def refused(self, reason, rec, **kw):
         with self.assertRaises(self.w.Refusal) as caught:
@@ -153,21 +199,71 @@ class TestVectors(unittest.TestCase):
                 self.assertEqual(canon.canonical(fields), fx["page"]["canonical"].encode("ascii"))
                 want = canon.challenge(rec["action"], rec["params"], rec["list"], rec["nonce"], rec["exp"], fx["origin"])
                 self.assertEqual(canon.b64u_encode(want), fx["page"]["challenge"])
-                cid = canon.b64u_decode(reg["credentialId"])
-                reg_auth = canon.b64u_decode(reg["authenticatorData"])
-                key = make_key(id=cid, ref=canon.key_ref(cid), user=canon.b64u_decode(reg["userId"]), alg=fx["alg"],
-                               spki=canon.b64u_decode(reg["publicKey"]), be=bool(reg_auth[32] & 0x08))
-                got = webauthn.verify(rec, {key.ref: key}, _cfg(), rec["list"], rec["exp"] - 60, 1)
+                key = chromium_key(fx)
+                spend = Spender()
+                got = webauthn.verify(rec, {key.ref: key}, _cfg(), rec["list"], rec["exp"] - 60, 1, spend)
                 self.assertEqual(got.key, key)
                 self.assertEqual(got.challenge, want)
                 self.assertTrue(got.auth.up and got.auth.uv and got.auth.be and got.auth.bs)
                 self.assertEqual(got.auth.count, 2)
+                self.assertEqual((spend.calls, spend.spent), (1, {rec["nonce"]}))
                 # the same record against a second, unrelated key of the same shape: the signature fails
-                other = make_key(id=cid, ref=key.ref, user=key.user, alg=fx["alg"],
-                                 spki=Signer(fx["alg"]).spki, be=key.be)
+                other = make_key(id=key.id, ref=key.ref, user=key.user, alg=fx["alg"],
+                                 spki=cached_signer(fx["alg"]).spki, be=key.be)
+                spend = Spender()
                 with self.assertRaises(webauthn.Refusal) as caught:
-                    webauthn.verify(rec, {key.ref: other}, _cfg(), rec["list"], rec["exp"] - 60, 1)
+                    webauthn.verify(rec, {key.ref: other}, _cfg(), rec["list"], rec["exp"] - 60, 1, spend)
                 self.assertEqual(caught.exception.reason, "signature")
+                self.assertEqual(spend.calls, 0)
+
+
+class TestReplay(unittest.TestCase):
+    """Hostile review finding 1: a genuine record sent again, from an authenticator that counts. After the first
+    answer root stored the record's counter (2), so on a resend the counter check alone would say "copied". The
+    freshness and spent-nonce checks come first, so a resend is `used-nonce` (or `expired`), not counted, no buzz."""
+
+    def setUp(self):
+        need("cryptography")
+        from zeus_root import webauthn
+        self.w = webauthn
+
+    def each(self):
+        for name in ("es256", "rs256"):
+            fx = _fixture("chromium-" + name + ".json")
+            key = chromium_key(fx)
+            yield name, fx["record"], {key.ref: key}
+
+    def refusal(self, rec, keys, now, spend):
+        with self.assertRaises(self.w.Refusal) as caught:
+            self.w.verify(rec, keys, _cfg(), rec["list"], now, 2, spend)
+        return caught.exception
+
+    def test_resend_after_its_answer_is_used_nonce(self):
+        for name, rec, keys in self.each():
+            with self.subTest(name):
+                spend = Spender({rec["nonce"]})
+                r = self.refusal(rec, keys, rec["exp"] - 60, spend)
+                self.assertEqual((r.reason, r.cls, r.attention), ("used-nonce", "not-counted", None))
+                self.assertEqual(spend.calls, 1)
+
+    def test_resend_two_days_later_is_expired(self):
+        for name, rec, keys in self.each():
+            with self.subTest(name):
+                for spent in ((), (rec["nonce"],)):
+                    spend = Spender(spent)
+                    r = self.refusal(rec, keys, rec["exp"] + 2 * 86400, spend)
+                    self.assertEqual((r.reason, r.cls, r.attention), ("expired", "not-counted", None))
+                    self.assertEqual(spend.calls, 0)
+
+    def test_same_counter_fresh_and_unspent_is_counter(self):
+        """The one case that still says "copied": a genuine signature, fresh, a nonce never seen, and a counter that
+        did not go up. A record root answered before cannot get here (its nonce is spent)."""
+        for name, rec, keys in self.each():
+            with self.subTest(name):
+                spend = Spender()
+                r = self.refusal(rec, keys, rec["exp"] - 60, spend)
+                self.assertEqual((r.reason, r.cls, r.attention), ("counter", "other", "copied-key"))
+                self.assertEqual(spend.calls, 1)
 
 
 class TestRefusals(Base):
@@ -175,6 +271,49 @@ class TestRefusals(Base):
         """The forging helper itself makes a record that passes: every refusal below comes from its one change."""
         got = self.verify(self.forge())
         self.assertEqual(got.auth.count, 7)
+        self.assertEqual((self.spender.calls, self.spender.spent), (1, {self.fx["record"]["nonce"]}))
+
+    def test_spend_only_after_signature_and_freshness(self):
+        """spend is not called for a record refused before or at freshness, and called exactly once for every record
+        that got past it, whatever comes after (counter, BE flag, list, or accepted)."""
+        exp = self.fx["record"]["exp"]
+        before = [("unknown-key", self.forge(), {"keys": {}}),
+                  ("wrong-device", self.forge(seen={"node_id": "nOTHERDEVICE"}), {}),
+                  ("origin", self.forge(client={"origin": "https://h.example:4444"}), {}),
+                  ("uv", self.forge(flags=FLAGS_OK & ~0x04), {}),
+                  ("signature", self.forge(bad_sig=True), {}),
+                  ("expired", self.forge(), {"now": exp}),
+                  ("expired", self.forge(), {"now": exp - 181})]
+        for reason, rec, kw in before:
+            with self.subTest(reason=reason, **{k: v for k, v in kw.items() if k == "now"}):
+                self.refused(reason, rec, **kw)
+                self.assertEqual(self.spender.calls, 0)
+        after = [("counter", self.forge(count=7), {"counter": 7}),
+                 ("be-changed", self.forge(flags=FLAGS_OK & ~0x18), {}),
+                 ("list-changed", self.forge(), {"list_sha": "0" * 64}),
+                 ("used-nonce", self.forge(), {"spend": Spender({self.fx["record"]["nonce"]})})]
+        for reason, rec, kw in after:
+            with self.subTest(reason=reason):
+                self.refused(reason, rec, **kw)
+                self.assertEqual(self.spender.calls, 1)
+        self.verify(self.forge())
+        self.assertEqual(self.spender.calls, 1)
+
+    def test_used_nonce_comes_before_counter_and_list(self):
+        """A spent nonce wins over a counter that did not go up, a BE flag that changed and a list that changed."""
+        spent = {self.fx["record"]["nonce"]}
+        self.refused("used-nonce", self.forge(count=7), counter=7, spend=Spender(spent))
+        self.refused("used-nonce", self.forge(flags=FLAGS_OK & ~0x18), spend=Spender(spent))
+        self.refused("used-nonce", self.forge(), list_sha="0" * 64, spend=Spender(spent))
+
+    def test_bs_may_change_when_be_does_not(self):
+        """Backup state (BS) may change between uses (a passkey syncs later); only backup eligibility (BE) is fixed."""
+        self.assertFalse(self.verify(self.forge(flags=FLAGS_OK & ~0x10)).auth.bs)
+        self.assertTrue(self.verify(self.forge(flags=FLAGS_OK)).auth.bs)
+        import dataclasses
+        k = dataclasses.replace(self.key, be=False)
+        got = self.verify(self.forge(flags=0x01 | 0x04), keys={k.ref: k})
+        self.assertEqual((got.auth.be, got.auth.bs), (False, False))
 
     def test_refuse_unknown_key(self):
         self.refused("unknown-key", self.forge(), keys={})
@@ -317,7 +456,8 @@ class TestRefusals(Base):
                 "origin": ("counted", "refused-counted"), "framed": ("counted", "refused-counted"),
                 "uv": ("counted", "refused-counted"), "signature": ("counted", "refused-counted"),
                 "counter": ("other", "copied-key"), "be-changed": ("other", "copied-key"),
-                "expired": ("not-counted", None), "list-changed": ("other", "list-changed")}
+                "expired": ("not-counted", None), "used-nonce": ("not-counted", None),
+                "list-changed": ("other", "list-changed")}
         self.assertEqual({k: v[:2] for k, v in self.w.REFUSALS.items()}, want)
         from zeus_root import logs
         for reason, (cls, att, sentence) in self.w.REFUSALS.items():
@@ -326,7 +466,52 @@ class TestRefusals(Base):
             self.assertTrue(sentence.endswith(".") and sentence.isascii())
 
 
+class TestRefusalsRS256(TestRefusals):
+    """Every refusal above again, with an RS256 key and the Chromium RS256 record (a 2048-bit RSA key, PKCS#1 v1.5)."""
+    ALG = -257
+    FIXTURE = "chromium-rs256.json"
+
+
 class TestVerifySig(unittest.TestCase):
+    def test_unknown_key_type_is_false_not_an_error(self):
+        """A SubjectPublicKeyInfo whose algorithm OID cryptography does not know raises UnsupportedAlgorithm inside;
+        verify_sig and key_fits answer False instead of letting it escape (hostile review note 4)."""
+        need("cryptography")
+        from zeus_root import webauthn
+        for alg in (-7, -257):
+            with self.subTest(alg=alg):
+                self.assertFalse(webauthn.key_fits(alg, UNKNOWN_OID_SPKI))
+                self.assertFalse(webauthn.verify_sig(alg, UNKNOWN_OID_SPKI, b"a" * 37, b"{}", b"\x30\x00"))
+
+    def test_key_fits(self):
+        """ES256 needs a P-256 key; RS256 an RSA key of at least 2048 bits with an odd exponent of at least 3.
+        cryptography 50 already refuses an exponent of 1 or an even one at load; webauthn checks it again so an older
+        or laxer build cannot let one through. This test checks the answer, whichever layer gives it."""
+        need("cryptography")
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ec, rsa
+        from zeus_root import webauthn
+
+        def spki(pub):
+            return pub.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+        es, rs = cached_signer(-7).spki, cached_signer(-257).spki
+        self.assertTrue(webauthn.key_fits(-7, es))
+        self.assertTrue(webauthn.key_fits(-257, rs))
+        self.assertFalse(webauthn.key_fits(-257, es))
+        self.assertFalse(webauthn.key_fits(-7, rs))
+        self.assertFalse(webauthn.key_fits(-8, es))
+        self.assertFalse(webauthn.key_fits(-7, spki(ec.generate_private_key(ec.SECP384R1()).public_key())))
+        n = cached_signer(-257).priv.public_key().public_numbers().n
+        self.assertTrue(webauthn.key_fits(-257, spki(rsa.RSAPublicNumbers(3, n).public_key())))
+        self.assertEqual(_rsa_spki(n, 65537), rs)
+        for e in (1, 2, 65536):
+            with self.subTest(e=e):
+                self.assertFalse(webauthn.key_fits(-257, _rsa_spki(n, e)))
+        small = rsa.generate_private_key(public_exponent=65537, key_size=1024).public_key()
+        self.assertFalse(webauthn.key_fits(-257, spki(small)))
+        self.assertFalse(webauthn.key_fits(-7, b""))
+        self.assertFalse(webauthn.key_fits(-7, b"not a key"))
+
     def test_wrong_curve_small_rsa_and_mismatch_refused(self):
         need("cryptography")
         from cryptography.hazmat.primitives import serialization

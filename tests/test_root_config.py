@@ -125,6 +125,10 @@ class ConfigFileTest(ConfigCase):
     def test_config_refuses(self):
         bad = [dict(origin="https://h.example:4444"), dict(origin="https://other.example:4443"),
                dict(keyport=443, origin="https://h.example:443"), dict(gateport=2000), dict(gateport=4443),
+               dict(keyport=8443, origin="https://h.example:8443"), dict(keyport=10000, origin="https://h.example:10000"),
+               dict(keyport=1024, origin="https://h.example:1024"), dict(keyport=900, gateport=841,
+                                                                         origin="https://h.example:900"),
+               dict(keyport=65536, origin="https://h.example:65536"),
                dict(rp_id="H.example"), dict(page_dir="relative/page"), dict(page_dir="/usr/../tmp"),
                dict(games=["a/b"]), dict(games="steam"), dict(reach_game_max_s=-1), dict(reach_game_max_s=7200),
                dict(extra=1)]
@@ -136,7 +140,15 @@ class ConfigFileTest(ConfigCase):
 
 
 class KeysTest(ConfigCase):
+    def test_keyport_edges_load(self):
+        """1025 and 65535 are the edges the key port may take (private design 10.3)."""
+        for port in (1025, 65535):
+            root_support.install_config(self.ctx, lambda d: d.update(keyport=port, origin="https://h.example:%d" % port))
+            self.assertEqual(config.load_config(self.ctx).keyport, port)
+
+
     def test_keys_roundtrip_and_labels_have_no_ids(self):
+        root_support.need("cryptography")
         root_support.install_list(self.ctx)
         actions, _ = config.load_actions(self.ctx)
         a = root_support.make_key()
@@ -156,11 +168,17 @@ class KeysTest(ConfigCase):
                          ("Close the media ports to the apartment network", "change", "phone"))
 
     def test_keys_refuse_odd_entries(self):
+        """Besides the shape: an empty or spaced node_id, and a public key that does not load or does not fit its alg
+        (random bytes, an RSA key under ES256, a P-256 key under RS256, a key type cryptography does not know)."""
+        root_support.need("cryptography")
         a = root_support.make_key()
         config.save_keys(self.ctx, {a.ref: a})
         good = json.loads((self.ctx.etc / "keys.json").read_bytes())
+        unknown_oid = bytes.fromhex("3019300d06092b0601040182370101050003080030050203010001")
         bad = [dict(ref="0" * 16), dict(alg=-8), dict(credentialId="AB"), dict(userId=""), dict(action="Close"),
-               dict(be=1), dict(extra=1)]
+               dict(be=1), dict(extra=1), dict(node_id=""), dict(node_id="n with space"),
+               dict(publicKey=canon.b64u_encode(os.urandom(91))), dict(publicKey=canon.b64u_encode(unknown_oid)),
+               dict(publicKey=canon.b64u_encode(root_support.spki_for(-257))), dict(alg=-257)]
         for change in bad:
             with self.subTest(change=change):
                 doc = json.loads(json.dumps(good))
@@ -168,6 +186,10 @@ class KeysTest(ConfigCase):
                 (self.ctx.etc / "keys.json").write_bytes(json.dumps(doc).encode())
                 with self.assertRaises(config.KeysInvalid):
                     config.load_keys(self.ctx)
+        rsa = json.loads(json.dumps(good))
+        rsa["keys"][0].update(alg=-257, publicKey=canon.b64u_encode(root_support.spki_for(-257)))
+        (self.ctx.etc / "keys.json").write_bytes(json.dumps(rsa).encode())
+        self.assertEqual(config.load_keys(self.ctx)[a.ref].alg, -257)
         doc = json.loads(json.dumps(good))
         doc["keys"].append(doc["keys"][0])
         (self.ctx.etc / "keys.json").write_bytes(json.dumps(doc).encode())

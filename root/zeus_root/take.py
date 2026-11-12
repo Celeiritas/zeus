@@ -94,7 +94,7 @@ def open_entry(ctx, path):
     try:
         fd = os.open(path, _OPEN)
     except OSError:
-        return Bad("other", st.st_size, st.st_uid, None, "would not open")
+        return Bad("file", st.st_size, st.st_uid, None, "would not open")
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
@@ -114,30 +114,44 @@ def open_entry(ctx, path):
     return data
 
 
-def _describe(path):
-    """type, size, owner and the checksum of the first 16 KB of an entry that read fine (for its log line)."""
+def _describe(path, data=None):
+    """type, size, owner and the checksum of the first 16 KB of an entry, for its log line. With data (the bytes
+    open_entry read), the checksum is of those bytes: what root refused, never a second read the gate could change.
+    Without (a leftover), a regular file is opened once more the same way; if that fails (a lease, say) the checksum
+    is null and nothing is raised, so one entry can never stop a start."""
     st = os.lstat(path)
     sha = None
-    if stat.S_ISREG(st.st_mode):
-        fd = os.open(path, _OPEN)
+    if data is not None:
+        sha = hashlib.sha256(data[:ENTRY_LIMIT]).hexdigest()
+    elif stat.S_ISREG(st.st_mode):
         try:
-            sha = hashlib.sha256(_read(fd, ENTRY_LIMIT)).hexdigest()
-        finally:
-            os.close(fd)
+            fd = os.open(path, _OPEN)
+        except OSError:
+            fd = None
+        if fd is not None:
+            try:
+                sha = hashlib.sha256(_read(fd, ENTRY_LIMIT)).hexdigest()
+            except OSError:
+                sha = None
+            finally:
+                os.close(fd)
     return {"type": _kind(st.st_mode), "size": st.st_size, "uid": st.st_uid, "sha256_16k": sha}
 
 
-def quarantine(ctx, path, bad, reason="malformed"):
+def quarantine(ctx, path, bad, reason="malformed", data=None):
     """Move a taken entry into run/quarantine/ and write its log line (never its content). bad (from open_entry) means
     it broke the file rules: class other, reason file-rules, and an attention line (at most one an hour, D8).
-    Otherwise reason is "malformed" (class garbage: no attention line, contract 8f) or "leftover" (class other)."""
+    Otherwise reason is "malformed" (class garbage: no attention line, contract 8f; data, the bytes open_entry read,
+    is required) or "leftover" (class other; never opened by this start before, so no data)."""
     if bad is not None:
         entry = {"type": bad.type, "size": bad.size, "uid": bad.uid, "sha256_16k": bad.sha256_16k}
         cls, reason = "other", "file-rules"
     else:
         if reason not in REASONS:
             raise ValueError("not a quarantine reason")
-        entry, cls = _describe(path), REASONS[reason]
+        if (reason == "malformed") != isinstance(data, (bytes, bytearray)):
+            raise ValueError("a malformed entry is quarantined with the bytes root read; a leftover without")
+        entry, cls = _describe(path, data), REASONS[reason]
     os.rename(path, ctx.run / "quarantine" / path.name)
     line = {"run": None, "outcome": "refused", "class": cls, "reason": reason, "entry": entry}
     if bad is not None:

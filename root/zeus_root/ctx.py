@@ -8,12 +8,13 @@ import os
 import subprocess
 import time
 from dataclasses import dataclass
-from datetime import datetime, tzinfo
+from datetime import datetime, timezone, tzinfo
 from pathlib import Path
 from typing import Callable, NamedTuple, Optional
 
 GATE_ACCOUNT = "zeus-root-gate"
 COMMAND_PATH = "/usr/sbin:/usr/bin"
+LOCALTIME = "/etc/localtime"
 
 
 class CmdResult(NamedTuple):
@@ -38,7 +39,7 @@ class Ctx:
     gate_uid: int
     gate_gid: int
     now: Callable[[], float]
-    tz: Optional[tzinfo]   # None = the server's own zone, with the offset of each moment (summer time comes out right)
+    tz: Optional[tzinfo]   # Ctx.system(): the zone of /etc/localtime (server_zone); None = Python's local zone
     cmd: Callable[[list, float], CmdResult]
     ask: Callable[[str], str]
     script_limit_s: float = 120
@@ -59,8 +60,20 @@ class Ctx:
             raise RuntimeError(GATE_ACCOUNT + " must not be root")
         return cls(etc=Path("/etc/zeus-root"), run=Path("/run/zeus-root"), lib=Path("/var/lib/zeus-root"),
                    log=Path("/var/log/zeus-root"), libexec=Path("/usr/local/libexec/zeus-root"), proc=Path("/proc"),
-                   root_uid=0, gate_uid=gate_uid, gate_gid=gate_gid, now=time.time, tz=None, cmd=run_command,
-                   ask=ask_terminal)
+                   root_uid=0, gate_uid=gate_uid, gate_gid=gate_gid, now=time.time, tz=server_zone(),
+                   cmd=run_command, ask=ask_terminal)
+
+
+def server_zone(path=LOCALTIME):
+    """The server's zone read from /etc/localtime itself (root-owned), never from TZ: sudo passes TZ through, so a
+    normal user could otherwise shift every time zeus-root writes (Z2a hostile review, finding 7). Each moment keeps
+    its own offset, so summer time comes out right. A missing or unreadable file gives UTC."""
+    try:
+        from zoneinfo import ZoneInfo
+        with open(path, "rb") as f:
+            return ZoneInfo.from_file(f)
+    except (OSError, ValueError, ImportError):
+        return timezone.utc
 
 
 def _text(b):
@@ -99,6 +112,6 @@ def ask_terminal(prompt):
 
 
 def iso(ctx, t):
-    """ISO 8601 to the second with the server's offset at that moment, e.g. 2026-11-11T19:05:00-05:00."""
+    """ISO 8601 to the second with the offset of ctx.tz at that moment, e.g. 2026-11-11T19:05:00-05:00."""
     d = datetime.fromtimestamp(t, ctx.tz) if ctx.tz is not None else datetime.fromtimestamp(t).astimezone()
     return d.isoformat(timespec="seconds")

@@ -113,16 +113,48 @@ def install_config(ctx, change=None):
     return doc
 
 
+_SPKI = {}
+
+
+def spki_for(alg):
+    """A real public key (DER SubjectPublicKeyInfo) that fits alg, made once per test run: ES256 a P-256 key, RS256 a
+    2048-bit RSA key. Needs cryptography (config.load_keys refuses a key that does not load and fit its alg)."""
+    if alg not in _SPKI:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ec, rsa
+        priv = (ec.generate_private_key(ec.SECP256R1()) if alg == -7
+                else rsa.generate_private_key(public_exponent=65537, key_size=2048))
+        _SPKI[alg] = priv.public_key().public_bytes(serialization.Encoding.DER,
+                                                    serialization.PublicFormat.SubjectPublicKeyInfo)
+    return _SPKI[alg]
+
+
 def make_key(action="close-media-lan", **over):
-    """A Key with random ids (no real key material: the public key bytes are placeholders here)."""
+    """A Key with random ids and a real public key that fits its alg (spki_for; pass spki= to choose one)."""
     from zeus_root import canon
     from zeus_root.config import Key
     cid = os.urandom(32)
     fields = dict(id=cid, ref=canon.key_ref(cid), action=action, user=os.urandom(16), node_id="nTEST1CNTRL",
-                  node_name="phone", login="owner@example.com", alg=-7, spki=os.urandom(91), be=True, claim="synced",
+                  node_name="phone", login="owner@example.com", alg=-7, spki=None, be=True, claim="synced",
                   words="apple brook cider delta ember", label="phone", made="2026-11-12T08:00:00+00:00", revoked=None)
     fields.update(over)
+    if fields["spki"] is None:
+        fields["spki"] = spki_for(fields["alg"])
     return Key(**fields)
+
+
+class Spender:
+    """verify()'s spend for tests: a set of spent nonces; .calls counts the calls."""
+
+    def __init__(self, spent=()):
+        self.spent, self.calls = set(spent), 0
+
+    def __call__(self, nonce):
+        self.calls += 1
+        if nonce in self.spent:
+            return False
+        self.spent.add(nonce)
+        return True
 
 
 def good_tree(ctx):
