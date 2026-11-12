@@ -1,0 +1,37 @@
+{
+ "_source": "made by tests/root_fixtures/make_chromium_fixtures.mjs on 2026-11-12 with Playwright 1.56.0 and 141.0.7390.37 (CDP WebAuthn virtual authenticator: ctap2, internal, resident key, UV, backup eligible and backed up)",
+ "origin": "https://h.example:4443",
+ "rp_id": "h.example",
+ "alg": -7,
+ "registration": {
+  "credentialId": "2K5T96Us9ZoslE7tyRFQYF9UU1nbdsafNR8Jr44OY70",
+  "userId": "fuLTmeoX3NFuR5N-zyundA",
+  "publicKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE_GPx1Xzaq3lQQpGkrJ8i8bzoS1R1fO-6PLPyY9SHUQiYPAzAF4CKp-WpWuaMx5gjoMMbtUG1Dq7WTt9IXfJLPQ",
+  "alg": -7,
+  "authenticatorData": "RA6I-AbyqXJSkqkEAAnbN1hQfh9E2aJvE6Nqmhze0LFdAAAAAQECAwQFBgcIAQIDBAUGBwgAINiuU_elLPWaLJRO7ckRUGBfVFNZ23bGnzUfCa-ODmO9pQECAyYgASFYIPxj8dV82qt5UEKRpKyfIvG86EtUdXzvujyz8mPUh1EIIlggmDwMwBeAiqflqVrmjMeYI6DDG7VBtQ6u1k7fSF3ySz0",
+  "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uY3JlYXRlIiwiY2hhbGxlbmdlIjoiUzNIQVpiWmlVMHBBMUlYM2ZPWFRwN1QxeTFVWTBLbmZ0N0NiUnNuNF9qbyIsIm9yaWdpbiI6Imh0dHBzOi8vaC5leGFtcGxlOjQ0NDMiLCJjcm9zc09yaWdpbiI6ZmFsc2V9"
+ },
+ "page": {
+  "canonical": "{\"action\":\"close-media-lan\",\"exp\":1794449973,\"list\":\"5f1a6c0e3b9d4a7782c1e0f9d3b6a5c4e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7\",\"nonce\":\"m0f-IUKV6Dc9cvq9q9PL_Z9LEC3f0nWevtvL0SvOELo\",\"origin\":\"https://h.example:4443\",\"params\":{}}",
+  "challenge": "5D7sHhDW0UtnJDaI_EApv3CUyltEIAhYHff13Nm35lQ"
+ },
+ "record": {
+  "type": "run",
+  "action": "close-media-lan",
+  "params": {},
+  "list": "5f1a6c0e3b9d4a7782c1e0f9d3b6a5c4e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7",
+  "nonce": "m0f-IUKV6Dc9cvq9q9PL_Z9LEC3f0nWevtvL0SvOELo",
+  "exp": 1794449973,
+  "credentialId": "2K5T96Us9ZoslE7tyRFQYF9UU1nbdsafNR8Jr44OY70",
+  "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiNUQ3c0hoRFcwVXRuSkRhSV9FQXB2M0NVeWx0RUlBaFlIZmYxM05tMzVsUSIsIm9yaWdpbiI6Imh0dHBzOi8vaC5leGFtcGxlOjQ0NDMiLCJjcm9zc09yaWdpbiI6ZmFsc2UsIm90aGVyX2tleXNfY2FuX2JlX2FkZGVkX2hlcmUiOiJkbyBub3QgY29tcGFyZSBjbGllbnREYXRhSlNPTiBhZ2FpbnN0IGEgdGVtcGxhdGUuIFNlZSBodHRwczovL2dvby5nbC95YWJQZXgifQ",
+  "authenticatorData": "RA6I-AbyqXJSkqkEAAnbN1hQfh9E2aJvE6Nqmhze0LEdAAAAAg",
+  "signature": "MEYCIQCZgqMKL8XPIoLyqKnteqDpPVdejuKfgi1mZegkbmONkwIhALmnzz4ZenknZGei5QsHQUe9TFwmTNgsmKx0lJrGwFy-",
+  "userHandle": "fuLTmeoX3NFuR5N-zyundA",
+  "seen": {
+   "login": "owner@example.com",
+   "node": "phone",
+   "node_id": "nTEST1CNTRL",
+   "ip": "192.0.2.7"
+  }
+ }
+}

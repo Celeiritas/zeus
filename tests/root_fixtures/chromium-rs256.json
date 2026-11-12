@@ -1,0 +1,37 @@
+{
+ "_source": "made by tests/root_fixtures/make_chromium_fixtures.mjs on 2026-11-12 with Playwright 1.56.0 and 141.0.7390.37 (CDP WebAuthn virtual authenticator: ctap2, internal, resident key, UV, backup eligible and backed up)",
+ "origin": "https://h.example:4443",
+ "rp_id": "h.example",
+ "alg": -257,
+ "registration": {
+  "credentialId": "Hnj0kY54AaRqYMpb1RcN7UqddwwzqbdFu1pPUFeIPQs",
+  "userId": "XbDZMEhI-26woalvAS8ZVw",
+  "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsxUmUNAhSu3wMB0hPHxwKF8LQ4O0-C_Zv3IN-66doKN8mNBXDEDElUlEwhTwJPfyamOvW2n8uPrzAjJOcwQrrg7AHEAJN4UWCNYe5alVVrCLgucxW3VVJsXpAANmtwymkRXbZpE2hMzRx3d9IkcBzpESTEZPFdupOlMPSlDZTMjwlUGl6vMXkR8MfbQaLa1QWTFZSCGgwfxT3kralNVGcHj-K-91zbgTtszYFOmDGCIMC-HMUPXqk8vMy5xwCI4fWKzPrUp3WZbhDiCEvLOj_tvD4p3Zzao6fj-kTeHFSuHy-faZzr64jw9adQnztTUblMxiR9ckubsOgqLt-NIjfQIDAQAB",
+  "alg": -257,
+  "authenticatorData": "RA6I-AbyqXJSkqkEAAnbN1hQfh9E2aJvE6Nqmhze0LFdAAAAAQECAwQFBgcIAQIDBAUGBwgAIB549JGOeAGkamDKW9UXDe1KnXcMM6m3RbtaT1BXiD0LpAEDAzkBACBZAQCzFSZQ0CFK7fAwHSE8fHAoXwtDg7T4L9m_cg37rp2go3yY0FcMQMSVSUTCFPAk9_JqY69bafy4-vMCMk5zBCuuDsAcQAk3hRYI1h7lqVVWsIuC5zFbdVUmxekAA2a3DKaRFdtmkTaEzNHHd30iRwHOkRJMRk8V26k6Uw9KUNlMyPCVQaXq8xeRHwx9tBotrVBZMVlIIaDB_FPeStqU1UZweP4r73XNuBO2zNgU6YMYIgwL4cxQ9eqTy8zLnHAIjh9YrM-tSndZluEOIIS8s6P-28PindnNqjp-P6RN4cVK4fL59pnOvriPD1p1CfO1NRuUzGJH1yS5uw6Cou340iN9IUMBAAE",
+  "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uY3JlYXRlIiwiY2hhbGxlbmdlIjoiUEM0OTQzZnJKRUxYS0RvV3ZQOFlhS0xBNlliME1IbE5Vc2dYMV9UWVRlOCIsIm9yaWdpbiI6Imh0dHBzOi8vaC5leGFtcGxlOjQ0NDMiLCJjcm9zc09yaWdpbiI6ZmFsc2V9"
+ },
+ "page": {
+  "canonical": "{\"action\":\"close-media-lan\",\"exp\":1794449973,\"list\":\"5f1a6c0e3b9d4a7782c1e0f9d3b6a5c4e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7\",\"nonce\":\"prBjb35G7Tf-SVsDTk4L1N6yQwKQ0sF79ew3ykkMUHo\",\"origin\":\"https://h.example:4443\",\"params\":{}}",
+  "challenge": "cgtQx0TS3wfPY3xKz7BC4c2eW0o9Uhjw3dms2GEEILE"
+ },
+ "record": {
+  "type": "run",
+  "action": "close-media-lan",
+  "params": {},
+  "list": "5f1a6c0e3b9d4a7782c1e0f9d3b6a5c4e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7",
+  "nonce": "prBjb35G7Tf-SVsDTk4L1N6yQwKQ0sF79ew3ykkMUHo",
+  "exp": 1794449973,
+  "credentialId": "Hnj0kY54AaRqYMpb1RcN7UqddwwzqbdFu1pPUFeIPQs",
+  "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiY2d0UXgwVFMzd2ZQWTN4S3o3QkM0YzJlVzBvOVVoanczZG1zMkdFRUlMRSIsIm9yaWdpbiI6Imh0dHBzOi8vaC5leGFtcGxlOjQ0NDMiLCJjcm9zc09yaWdpbiI6ZmFsc2V9",
+  "authenticatorData": "RA6I-AbyqXJSkqkEAAnbN1hQfh9E2aJvE6Nqmhze0LEdAAAAAg",
+  "signature": "K-6cemevAIEbcgrk5mxoYDnt6GslIecWUal47B_WbqwteCVh7FJ0h_YIESbspP6xQ1f8s_PcHQ7fK_4eFzl4TlnY15LJpGjTy173Fi2Jq6QQxBkoKD1aRsF75m719pT9Si3m3uqObRXfBWqIb160x8R5r4kPN8wTCQLbOCzebtVfXwscZ7l2FyzRQecbCNAGS8lf9dw50Sy1uRdzz8QeBbZ6wDnIRveGx2-djSEIwLiZO90RJelXntC-JZ0qpLeeLXTYAEJVjTTyG3mjARO4N8zcGGY0u3Bbi0LVgxXKC3bS72JFawrbYNjx9hc-Asnol5F941viPxGYcVy_IG65GA",
+  "userHandle": "XbDZMEhI-26woalvAS8ZVw",
+  "seen": {
+   "login": "owner@example.com",
+   "node": "phone",
+   "node_id": "nTEST1CNTRL",
+   "ip": "192.0.2.7"
+  }
+ }
+}
