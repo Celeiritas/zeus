@@ -2,15 +2,18 @@
 attention windows (D8), per-action limits, and the lock every start takes.
 
 Callers hold lock(ctx) around every read-modify-write here (the runner for a whole start, the command line for one
-change; the one call without it, the runner's spend for a record refused busy at the lock, is safe as spend_nonce
-says). Each file is written to a temporary name in its own folder, flushed and renamed into place, mode 600. A state
-file that doesn't read back raises Broken, and the caller stops instead of guessing (fail closed). Times come from
-ctx.now(); only the lock's wait uses the real monotonic clock.
+change). The nonce store also has a short lock of its own, which every spend and every prune takes, so the one call
+without lock(ctx), the runner's spend for a record refused busy at it (Z2b), never interleaves with another. Each state
+file is written to a temporary name in its own folder, flushed and renamed into place, mode 600; a new nonce file is
+linked into place from its temporary name instead, so it never replaces one that is there. A state file that doesn't
+read back raises Broken, and the caller stops instead of guessing (fail closed). Times come from ctx.now(); only the
+locks' waits use the real monotonic clock.
 """
 import contextlib
 import hashlib
 import math
 import os
+import stat
 import tempfile
 import time
 
@@ -19,10 +22,12 @@ from . import canon
 HOUR_S = 3600
 DAY_S = 86400
 NONCE_KEEP_LIMIT = 2 ** 32             # no nonce file time past 2106-02-07 (a record expiring later is never fresh before)
+NONCE_LOCK = "nonce-lock"              # lib/nonce-lock: beside lib/lock, outside nonces/ so a prune never sees it
 WINDOWED = ("file-rules", "watcher-failed")   # D8: one line an hour; later ones are folded into the next line
 MAX_KEPT = 100                                 # refusal times kept per class: enough for any "3 in an hour"
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
 
 
 class Broken(Exception):
@@ -30,7 +35,7 @@ class Broken(Exception):
 
 
 class Busy(Exception):
-    """Another start held the lock for longer than ctx.lock_wait_s."""
+    """Another start held the lock (or another call the nonce lock) for longer than ctx.lock_wait_s."""
 
 
 def _fsync_dir(folder):
@@ -132,46 +137,53 @@ def _stamp(path, fd, t):
 def spend_nonce(ctx, nonce, exp=None):
     """Mark a nonce used: True the first time, False until it is pruned. exp is the signed expiry of the nonce's record
     (unix seconds), or None (anything but an int counts as None) when there is none or it was not checked: webauthn
-    passes it only once the signature checked out. The nonce is kept until a day after the later of the moment it was
-    spent and exp, so a genuine record refused because its exp was too far ahead cannot run once that exp comes near:
-    keeping it one day only let a lying gate hand the same signed record in again a day later (0.8.1 re-check,
-    finding 2). A nonce already spent is kept longer, never shorter, when a later call brings a signed exp that is
-    still ahead of root's clock and past its file's time: a copy refused before its signature keeps it one day, and the
-    intact record whose signature then checks out must still keep it until a day after that exp (re-check of de22580,
-    finding 1). A signed exp already past moves nothing: that record is never fresh again.
+    passes it only once the signature checked out. Every spend keeps the nonce until at least a day after that spend,
+    and a signed exp still ahead of root's clock keeps it until a day after that exp (the file time stops at 2^32); a
+    nonce already spent is kept longer, never shorter. So a genuine record refused because its exp was too far ahead
+    cannot run once that exp comes near (0.8.1 re-check, finding 2); a copy refused before its signature followed by
+    the intact record, whose signature checks out, keeps the nonce until a day after that exp (re-check of de22580,
+    finding 1); and a copy refused inside its record's 180 s keeps the nonce a day from that refusal even when the gate
+    re-issued a nonce root still kept, so the intact record cannot get past it after the next prune (re-check of
+    1f44350, N1). A signed exp already past moves nothing beyond now: that record is never fresh again.
 
-    A call with an exp holds lock(ctx). The runner's call for a record refused busy at the lock (Z2b) holds no lock and
-    passes no exp, and it cannot move back a keep that a call under the lock set: a new nonce file gets its time under
-    a temporary name and is then linked into place, so it never shows without that time, and a call without a signed
-    exp never changes a file that is there (re-check of 32b460d, note 1)."""
+    Every spend holds the nonce lock, the runner's for a record refused busy at lib/lock (Z2b) too, so no other spend
+    or prune changes the file between its fstat and its stamp. A new nonce file still gets its time under a temporary
+    name and is then linked into place, so a crash never leaves it without that time, and the folder is fsynced before
+    any answer, False too (re-check of 1f44350, N3). Raises Busy when the nonce lock is not free within
+    ctx.lock_wait_s, and Broken when something other than a regular file is at the nonce's path: the caller writes no
+    result either way."""
     path = _nonce_path(ctx, nonce)
-    now = ctx.now()
-    signed_later = type(exp) is int and exp > now
-    keep = max(now, min(exp, NONCE_KEEP_LIMIT)) if signed_later else now
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".spend.")
-    try:
-        _stamp(tmp, fd, keep)
+    with _nonce_lock(ctx):
+        now = ctx.now()
+        signed_later = type(exp) is int and exp > now
+        keep = max(now, min(exp, NONCE_KEEP_LIMIT)) if signed_later else now
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".spend.")
         try:
-            os.link(tmp, path)
-            first = True
-        except FileExistsError:
-            first = False
-    finally:
-        with contextlib.suppress(OSError):   # a temporary left behind is pruned by its time like a nonce
-            os.unlink(tmp)
-    if first:
+            _stamp(tmp, fd, keep)
+            try:
+                os.link(tmp, path)
+                first = True
+            except FileExistsError:
+                first = False
+        finally:
+            with contextlib.suppress(OSError):   # a temporary left behind is pruned by its time like a nonce
+                os.unlink(tmp)
+        if not first:
+            _keep_until(path, keep)
         _fsync_dir(path.parent)
-    elif signed_later:
-        _keep_until(path, keep)
     return first
 
 
 def _keep_until(path, t):
-    """Move a spent nonce's file time forward to t, never back. Only calls under the lock come here, so nothing else
-    changes the time between the fstat and the stamp."""
-    fd = os.open(path, os.O_WRONLY | _NOFOLLOW | _CLOEXEC)
+    """Move a spent nonce's file time forward to t, never back; the caller holds the nonce lock, so nothing changes the
+    time between the fstat and the stamp. The file is opened without blocking and must be a regular file, else Broken:
+    a FIFO there would otherwise block the spend for ever with both locks held (re-check of 1f44350, N2)."""
+    fd = os.open(path, os.O_WRONLY | _NOFOLLOW | _CLOEXEC | _NONBLOCK)
     try:
-        later = os.fstat(fd).st_mtime < t
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise Broken("a nonce path is not a regular file")
+        later = st.st_mtime < t
     except BaseException:
         os.close(fd)
         raise
@@ -182,17 +194,18 @@ def _keep_until(path, t):
 
 
 def prune_nonces(ctx):
-    """Forget a nonce a day after its file's time (when it was spent, or the latest signed exp root saw for it if
-    later). By then the record it was spent for expired a day ago, or (no signed exp) root first refused a copy of it
+    """Forget a nonce a day after its file's time (when it was last spent, or the latest signed exp root saw for it if
+    later). By then the record it was spent for expired a day ago, or (no signed exp) root last refused a copy of it
     before its signature more than a day ago, which covers any record whose exp is at most a day after that refusal. A
     record with an exp more than a day ahead that root refused only before its signature while it kept the nonce is
-    the key page's to stop (contract §8b)."""
-    cutoff = ctx.now() - DAY_S
-    with os.scandir(ctx.lib / "nonces") as it:
-        for e in it:
-            if e.is_file(follow_symlinks=False) and e.stat(follow_symlinks=False).st_mtime < cutoff:
-                with contextlib.suppress(FileNotFoundError):
-                    os.unlink(e.path)
+    the key page's to stop (contract §8b). Holds the nonce lock, like every spend."""
+    with _nonce_lock(ctx):
+        cutoff = ctx.now() - DAY_S
+        with os.scandir(ctx.lib / "nonces") as it:
+            for e in it:
+                if e.is_file(follow_symlinks=False) and e.stat(follow_symlinks=False).st_mtime < cutoff:
+                    with contextlib.suppress(FileNotFoundError):
+                        os.unlink(e.path)
 
 
 # --- signature counters --------------------------------------------------------------------------------------------
@@ -324,21 +337,46 @@ def note_run(ctx, action_id):
 
 # --- the lock ------------------------------------------------------------------------------------------------------
 
-@contextlib.contextmanager
-def lock(ctx):
-    """Hold lib/lock (flock) for one start or one command; wait at most ctx.lock_wait_s, then raise Busy."""
+def _flock(ctx, name, why):
+    """Open lib/<name> and take its flock, waiting at most ctx.lock_wait_s, then raise Busy(why); returns the fd, whose
+    close releases the lock."""
     import fcntl
-    fd = os.open(ctx.lib / "lock", os.O_RDWR | os.O_CREAT | _NOFOLLOW | _CLOEXEC, 0o600)
+    fd = os.open(ctx.lib / name, os.O_RDWR | os.O_CREAT | _NOFOLLOW | _CLOEXEC, 0o600)
     try:
         deadline = time.monotonic() + ctx.lock_wait_s
         while True:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
+                return fd
             except BlockingIOError:
                 if time.monotonic() >= deadline:
-                    raise Busy("another start holds the lock") from None
+                    raise Busy(why) from None
                 time.sleep(0.05)
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+@contextlib.contextmanager
+def lock(ctx):
+    """Hold lib/lock (flock) for one start or one command; wait at most ctx.lock_wait_s, then raise Busy."""
+    fd = _flock(ctx, "lock", "another start holds the lock")
+    try:
         yield
     finally:
         os.close(fd)   # closing the handle releases the lock
+
+
+@contextlib.contextmanager
+def _nonce_lock(ctx):
+    """Hold lib/nonce-lock (flock) for one spend or one prune: a few file operations, never a whole start, so the
+    runner's spend for a record refused busy at lib/lock (Z2b) takes it too. Taken after lib/lock, never before it.
+    Windows (tests only) has no flock: there it holds nothing."""
+    if os.name != "posix":
+        yield
+        return
+    fd = _flock(ctx, NONCE_LOCK, "another call holds the nonce lock")
+    try:
+        yield
+    finally:
+        os.close(fd)

@@ -7,12 +7,13 @@ files as garbage). `spend` is its one side effect: it is called exactly once for
 a nonce of the right shape, whatever verify answers, and never for one whose nonce does not (re-check R1, 2026-11-11).
 Once the signature has checked out, it gets the record's exp too (the challenge commits to exp, so that exp is the one
 the phone signed), and the nonce is kept until a day after the later of now and that exp, also when it was already
-spent and that exp is still ahead (its keep moves forward, never back; a record past its exp is never fresh again);
-before that it gets None and the nonce is kept a day (0.8.1 re-check, finding 2, the re-check of its fix, finding B,
-and the re-check of de22580, finding 1). So once root has checked a
-record's signature, the record can never run later when it is sent again as it was, even one whose exp was too far
-ahead and whose spoiled copy came first, and a spoiled copy of a record within root's 180 s cannot let it run later
-either. Root does not close one case: a record whose exp is more than a day ahead that root refused only before its
+spent and that exp is still ahead (a keep moves forward, never back; a record past its exp is never fresh again; the
+file time stops at 2^32); before that it gets None and the nonce is kept a day from now, also when it was already
+spent (0.8.1 re-check, finding 2, the re-check of its fix, finding B, the re-check of de22580, finding 1, and the
+re-check of 1f44350, N1). So once root has checked a record's signature, the record can never run later when it is
+sent again as it was, even one whose exp was too far ahead and whose spoiled copy came first, and a spoiled copy of a
+record within root's 180 s cannot let it run later either, also with a nonce the gate re-issued while root still kept
+it. Root does not close one case: a record whose exp is more than a day ahead that root refused only before its
 signature while it kept the nonce (spoiled copies, any part spoiled, its exp moved or not, refused counted or as
 garbage; or copies the runner refused busy at the lock, Z2b). Root never learns the signed exp, keeps the nonce one
 day, and the intact record can run once its far exp comes near. Only the key page's exp check (contract §8b, Z4) stops
@@ -199,22 +200,22 @@ def verify(rec, keys, cfg, list_sha, now, counter, spend):
     """Check one run or check-key record (D10, amended). keys: registered keys by ref; cfg: config.Config; list_sha:
     the installed actions.json's sha256 hex; now: unix seconds; counter: the key's stored sign counter (None before its
     first use, read as 0); spend(nonce, exp) -> bool: marks the nonce used and says whether this was the first time
-    (the runner passes state.spend_nonce bound to its ctx); a first spend keeps the nonce until a day after the later
-    of now and exp, and a later one moves that keep forward to a day after exp only when exp is still ahead of now (a
-    record past its exp is never fresh again), never back. exp is the record's exp once the signature has checked out
-    (the exp the phone signed), else None: a record refused before that point can name any exp, and a far one would
-    leave a nonce file for years.
+    (the runner passes state.spend_nonce bound to its ctx); every spend keeps the nonce until at least a day after now,
+    and until a day after exp when exp is still ahead of now (a record past its exp is never fresh again; the file time
+    stops at 2^32), moving a nonce already kept forward, never back. exp is the record's exp once the signature has
+    checked out (the exp the phone signed), else None: a record refused before that point can name any exp, and a far
+    one would leave a nonce file for years.
 
     The nonce's shape is checked first. A record whose nonce has the wrong shape raises canon.Malformed and spends
     nothing (it can name no run). For any other record spend is called exactly once, whatever the answer: Verified, a
     Refusal, canon.Malformed for the rest of the record, or an error. So a record that was refused and is sent again as
-    it was can never run later when its exp is at most a day after the first refusal that spent its nonce (a later
-    refusal before the signature keeps it no longer; re-check of 32b460d, note 2), even one the gate spoiled on purpose
-    before sending it again intact (re-check R1), nor, once root has checked its signature, one whose exp was too far
-    ahead (0.8.1 re-check, finding 2; re-check of de22580, finding 1). Not covered: a record whose exp is more than a
-    day ahead that root refused only before its signature while it kept the nonce keeps the nonce one day only; the
-    key page's exp check stops that case (module docstring). An error raised by spend itself is raised as it is, and
-    spend is not called a second time. Returns Verified; raises Refusal or Malformed."""
+    it was can never run later when its exp is at most a day after any refusal that spent its nonce (each one keeps it
+    a day from then, also a nonce the gate re-issued while root still kept it; re-check of 1f44350, N1), even one the
+    gate spoiled on purpose before sending it again intact (re-check R1), nor, once root has checked its signature, one
+    whose exp was too far ahead (0.8.1 re-check, finding 2; re-check of de22580, finding 1). Not covered: a record
+    whose exp is more than a day ahead that root refused only before its signature while it kept the nonce keeps the
+    nonce one day only; the key page's exp check stops that case (module docstring). An error raised by spend itself
+    is raised as it is, and spend is not called a second time. Returns Verified; raises Refusal or Malformed."""
     nonce = rec.get("nonce") if isinstance(rec, dict) else None
     if not canon.valid_nonce(nonce):
         raise canon.Malformed("no well-formed nonce")

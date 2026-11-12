@@ -480,6 +480,37 @@ class TestRefusals(Base):
                 state.prune_nonces(ctx)
                 self.refused("used-nonce", intact, now=ctx.now.t, spend=spend)
 
+    def test_a_reused_nonce_refused_inside_its_180_s_keeps_the_intact_record_out(self):
+        """Re-check of 1f44350, N1, with root's own nonce store: a lying gate re-issues a nonce root spent almost a day
+        ago. A copy refused inside the new record's 180 s (spoiled before its signature, or busy at the lock: the
+        runner's own spend, no exp) keeps the nonce a day from that refusal, so after the next start's prune the
+        intact record is `used-nonce`, not run."""
+        import tempfile
+        from tests import root_support
+        from zeus_root import state
+        exp = self.fx["record"]["exp"]
+        nonce = self.fx["record"]["nonce"]
+        intact = self.forge()
+        for how in ("spoiled", "busy"):
+            with self.subTest(how), tempfile.TemporaryDirectory() as tmp:
+                ctx = root_support.make_ctx(tmp)
+
+                def spend(n, e):
+                    return state.spend_nonce(ctx, n, e)
+                ctx.now.t = exp - 170 - 86400 + 30      # an earlier record with this nonce spent it
+                self.assertTrue(state.spend_nonce(ctx, nonce))
+                ctx.now.t = exp - 170                    # a copy of the new record, refused inside its 180 s
+                state.prune_nonces(ctx)
+                if how == "spoiled":
+                    self.refused("wrong-device", self.forge(seen={"node_id": "nOTHERDEVICE"}), now=ctx.now.t,
+                                 spend=spend)
+                else:
+                    self.assertFalse(state.spend_nonce(ctx, nonce))
+                ctx.now.t = exp - 100                    # the next start prunes: the first spend is a day old now
+                state.prune_nonces(ctx)
+                ctx.now.t = exp - 90
+                self.refused("used-nonce", intact, now=ctx.now.t, spend=spend)
+
     def test_a_forgery_keeps_its_reason_when_the_nonce_is_spent(self):
         """`used-nonce` is decided only after the signature and freshness: a forgery carrying a spent nonce is still a
         counted `signature` refusal, never laundered into a not-counted one."""

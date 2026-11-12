@@ -1,4 +1,5 @@
 """zeus-root: root's own state: spent nonces, counters, the pause, refusal counts, attention windows (D8), limits, the lock."""
+import contextlib
 import hashlib
 import os
 import tempfile
@@ -42,6 +43,9 @@ class StateCase(unittest.TestCase):
 
 
 class NonceTest(StateCase):
+    def nonce_file(self):
+        return self.ctx.lib / "nonces" / hashlib.sha256(NONCE.encode()).hexdigest()[:32]
+
     def test_nonce_spent_once(self):
         self.assertTrue(state.spend_nonce(self.ctx, NONCE))
         self.assertFalse(state.spend_nonce(self.ctx, NONCE))
@@ -53,7 +57,7 @@ class NonceTest(StateCase):
         state.spend_nonce(self.ctx, NONCE)
         self.at(86400)
         state.prune_nonces(self.ctx)
-        self.assertFalse(state.spend_nonce(self.ctx, NONCE))
+        self.assertTrue(self.nonce_file().exists())
         self.at(86401)
         state.prune_nonces(self.ctx)
         self.assertTrue(state.spend_nonce(self.ctx, NONCE))
@@ -64,7 +68,7 @@ class NonceTest(StateCase):
         state.spend_nonce(self.ctx, NONCE, exp)
         self.at(2 * 86400 + 86400)
         state.prune_nonces(self.ctx)
-        self.assertFalse(state.spend_nonce(self.ctx, NONCE))
+        self.assertTrue(self.nonce_file().exists())
         self.at(2 * 86400 + 86401)
         state.prune_nonces(self.ctx)
         self.assertTrue(state.spend_nonce(self.ctx, NONCE))
@@ -101,30 +105,47 @@ class NonceTest(StateCase):
         self.assertFalse(state.spend_nonce(self.ctx, NONCE, exp))
         self.at(2 * 86400 + 86400)
         state.prune_nonces(self.ctx)
-        self.assertFalse(state.spend_nonce(self.ctx, NONCE))
+        self.assertTrue(self.nonce_file().exists())
         self.at(2 * 86400 + 86401)
         state.prune_nonces(self.ctx)
         self.assertTrue(state.spend_nonce(self.ctx, NONCE))
 
-    def test_only_a_later_signed_exp_moves_a_spent_nonce(self):
-        """A spent nonce's time never moves back, and nothing but an int exp later than its time moves it forward: a
-        resend without a signed exp cannot keep a nonce alive, and an earlier exp cannot shorten its keep."""
-        path = self.ctx.lib / "nonces" / hashlib.sha256(NONCE.encode()).hexdigest()[:32]
+    def test_every_spend_moves_a_spent_nonce_forward_never_back(self):
+        """Re-check of 1f44350, N1: a spend of a nonce already spent keeps it at least a day from that spend, with or
+        without an exp, and only an int exp later than now moves it past now. Nothing moves its time back: not an
+        earlier exp, not a clock that went back."""
         far = int(self.t0) + 9 * 86400
-        for first, kept in ((None, self.t0), (far, far)):
+        for first, kept in ((None, self.t0 + 3600), (far, far)):
             with self.subTest(first=first):
                 for f in (self.ctx.lib / "nonces").iterdir():
                     f.unlink()
                 self.at(0)
-                state.spend_nonce(self.ctx, NONCE, first)
+                self.assertTrue(state.spend_nonce(self.ctx, NONCE, first))
                 self.at(3600)
                 for exp in (None, _NotQuiteInt(far + 86400), int(self.t0) - 600, int(self.t0) + 3000,
                             float(far + 86400), str(far + 86400)):
                     self.assertFalse(state.spend_nonce(self.ctx, NONCE, exp))
-                    self.assertEqual(os.stat(path).st_mtime, kept, exp)
-                if first is not None:
-                    self.assertFalse(state.spend_nonce(self.ctx, NONCE, far - 86400))
-                    self.assertEqual(os.stat(path).st_mtime, far)
+                    self.assertEqual(os.stat(self.nonce_file()).st_mtime, kept, exp)
+                self.at(1800)                       # the clock went back
+                self.assertFalse(state.spend_nonce(self.ctx, NONCE))
+                self.assertEqual(os.stat(self.nonce_file()).st_mtime, kept)
+                self.at(3600)
+                self.assertFalse(state.spend_nonce(self.ctx, NONCE, far - 86400))
+                self.assertEqual(os.stat(self.nonce_file()).st_mtime, max(kept, far - 86400))
+
+    def test_a_spend_keeps_a_reused_nonce_a_day_from_that_spend(self):
+        """Re-check of 1f44350, N1: a lying gate re-issues a nonce root spent almost a day ago. The copy refused now
+        (spoiled before its signature, or busy at the lock: no exp) keeps the nonce a day from now, so the intact
+        record, inside its 180 s, still finds it spent after the next start's prune."""
+        self.assertTrue(state.spend_nonce(self.ctx, NONCE))
+        self.at(86400 - 30)
+        self.assertFalse(state.spend_nonce(self.ctx, NONCE))
+        self.at(86400 + 150)
+        state.prune_nonces(self.ctx)
+        self.assertFalse(state.spend_nonce(self.ctx, NONCE))
+        self.at(2 * 86400 + 151)
+        state.prune_nonces(self.ctx)
+        self.assertTrue(state.spend_nonce(self.ctx, NONCE))
 
     def test_a_far_signed_exp_moves_a_spent_nonce_only_to_the_cap(self):
         """Re-check of 32b460d, note 4: moving a spent nonce's time stops at 2^32 too, as a first spend does."""
@@ -134,41 +155,100 @@ class NonceTest(StateCase):
         self.assertFalse(state.spend_nonce(self.ctx, NONCE, 2 ** 53 - 1))
         self.assertEqual(os.stat(path).st_mtime, state.NONCE_KEEP_LIMIT)
 
-    def test_a_spend_without_the_lock_never_moves_a_signed_keep_back(self):
-        """Re-check of 32b460d, note 1: the runner spends the nonce of a record refused busy at the lock without the
-        lock and without an exp (Z2b). A spend under the lock with a signed exp may run at any point of it, and the
-        nonce must still end kept until that exp, with exactly one of the two spends the first. Each step of the
-        lockless spend (each use of os or tempfile in state) is tried in turn."""
-        path = self.ctx.lib / "nonces" / hashlib.sha256(NONCE.encode()).hexdigest()[:32]
-        exp = int(self.t0) + 2 * 86400
-        real_os, real_tempfile = state.os, state.tempfile
-        tried = 0
-        for k in range(1, 500):
-            for f in (self.ctx.lib / "nonces").iterdir():
-                f.unlink()
-            steps, locked = [0], []
+    def test_every_change_to_the_nonce_store_holds_the_nonce_lock(self):
+        """Re-check of 1f44350, N1: every spend (with or without an exp, first or not; the runner's spend for a record
+        refused busy at lib/lock among them) and every prune touch the nonce folder only while they hold the nonce
+        lock, so a spend can move a kept nonce forward and nothing moves it back between its fstat and its stamp."""
+        inside, steps = [False], [0]
 
-            def tick():
-                steps[0] += 1
-                if steps[0] == k:
-                    saved = state.os, state.tempfile
-                    state.os, state.tempfile = real_os, real_tempfile
-                    try:
-                        locked.append(state.spend_nonce(self.ctx, NONCE, exp))
-                    finally:
-                        state.os, state.tempfile = saved
+        @contextlib.contextmanager
+        def held(ctx):
+            self.assertIs(ctx, self.ctx)
+            self.assertFalse(inside[0])
+            inside[0] = True
+            try:
+                yield
+            finally:
+                inside[0] = False
 
-            with mock.patch.object(state, "os", _Steps(real_os, tick)):
-                with mock.patch.object(state, "tempfile", _Steps(real_tempfile, tick)):
-                    lockless = state.spend_nonce(self.ctx, NONCE)
-            if not locked:
-                break
-            tried += 1
-            with self.subTest(step=k):
-                self.assertEqual(os.stat(path).st_mtime, exp)
-                self.assertEqual(sorted([lockless, locked[0]]), [False, True])
-        self.assertGreater(tried, 5)
-        self.assertLess(tried, 499)
+        def tick():
+            steps[0] += 1
+            self.assertTrue(inside[0], "a step on the nonce store outside the nonce lock")
+        with mock.patch.object(state, "_nonce_lock", held), mock.patch.object(state, "os", _Steps(os, tick)), \
+                mock.patch.object(state, "tempfile", _Steps(tempfile, tick)):
+            self.assertTrue(state.spend_nonce(self.ctx, NONCE))
+            self.assertFalse(state.spend_nonce(self.ctx, NONCE))
+            self.at(3600)
+            self.assertFalse(state.spend_nonce(self.ctx, NONCE, int(self.t0) + 86400))
+            self.at(3 * 86400)
+            state.prune_nonces(self.ctx)
+        self.assertGreater(steps[0], 20)
+        self.assertFalse(self.nonce_file().exists())
+
+    def test_a_spend_or_prune_waits_for_the_nonce_lock_then_says_busy(self):
+        """The nonce lock is a flock of its own: held elsewhere (another start's spend), a spend or a prune waits
+        ctx.lock_wait_s, raises Busy and leaves the folder as it was; lib/lock held (a start) does not block it."""
+        root_support.need("linux")
+        import fcntl
+        self.ctx.lock_wait_s = 0.2
+        fd = os.open(self.ctx.lib / state.NONCE_LOCK, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            for call in (lambda: state.spend_nonce(self.ctx, NONCE), lambda: state.prune_nonces(self.ctx)):
+                start = time.monotonic()
+                with self.assertRaises(state.Busy):
+                    call()
+                self.assertLess(time.monotonic() - start, 2)
+            self.assertEqual(list((self.ctx.lib / "nonces").iterdir()), [])
+        finally:
+            os.close(fd)
+        with state.lock(self.ctx):
+            self.assertTrue(state.spend_nonce(self.ctx, NONCE))
+            state.prune_nonces(self.ctx)
+
+    def test_the_folder_is_fsynced_before_every_answer(self):
+        """Re-check of 1f44350, N3: the nonces folder is fsynced before spend answers, False too, so the refusal root
+        writes after a False cannot outlive, after a power cut, the nonce file that False relied on."""
+        seen = []
+        with mock.patch.object(state, "_fsync_dir", seen.append):
+            self.assertTrue(state.spend_nonce(self.ctx, NONCE))
+            self.assertFalse(state.spend_nonce(self.ctx, NONCE))
+            self.assertFalse(state.spend_nonce(self.ctx, NONCE, int(self.t0) + 86400))
+        self.assertEqual(seen, [self.ctx.lib / "nonces"] * 3)
+
+    def test_a_folder_at_a_nonce_path_fails_closed(self):
+        """Re-check of 1f44350, N2: something that is not a regular file at a nonce's path makes every spend raise,
+        never answer. Only root writes this folder, so this is robustness, not a gate's attack."""
+        self.nonce_file().mkdir()
+        for exp in (None, int(self.t0) + 86400):
+            with self.subTest(exp=exp), self.assertRaises((state.Broken, OSError)):
+                state.spend_nonce(self.ctx, NONCE, exp)
+
+    def test_a_fifo_at_a_nonce_path_never_blocks_a_spend(self):
+        """Re-check of 1f44350, N2: a FIFO at a nonce's path, with or without a reader, makes a spend raise at once:
+        the nonce file is opened without blocking and checked to be a regular file (design 16.4 step 6 opens inbox
+        entries the same way). Blocking there would hold both locks for ever and stop every root action."""
+        root_support.need("linux")
+        import signal
+
+        def stuck(*_):
+            raise AssertionError("spend blocked on a FIFO")
+        old = signal.signal(signal.SIGALRM, stuck)
+        self.addCleanup(signal.signal, signal.SIGALRM, old)
+        self.addCleanup(signal.alarm, 0)
+        os.mkfifo(self.nonce_file(), 0o600)
+        for reader in (False, True):
+            r = os.open(self.nonce_file(), os.O_RDONLY | os.O_NONBLOCK) if reader else None
+            try:
+                for exp in (None, int(self.t0) + 86400):
+                    with self.subTest(reader=reader, exp=exp):
+                        signal.alarm(5)
+                        with self.assertRaises(state.Broken if reader else (state.Broken, OSError)):
+                            state.spend_nonce(self.ctx, NONCE, exp)
+                        signal.alarm(0)
+            finally:
+                if r is not None:
+                    os.close(r)
 
     def test_file_time_is_set_before_its_fsync(self):
         """Re-check of f4e8ad8, note C: the nonce file gets its time on the open file before the file's fsync, so a
@@ -329,7 +409,7 @@ class FilesTest(StateCase):
                 seen.append(f)
                 self.assertEqual(os.stat(p).st_mode & 0o777, 0o600, p)
                 self.assertFalse(f.startswith("."), p)
-        self.assertEqual(len(seen), 6)
+        self.assertEqual(len(seen), 7)     # with lib/nonce-lock
 
     def test_lock_busy(self):
         root_support.need("linux")
