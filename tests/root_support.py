@@ -81,3 +81,60 @@ def make_ctx(tmp, **over):
               ctx.proc):
         d.mkdir(parents=True, exist_ok=True)
     return ctx
+
+
+FIXTURES = Path(__file__).resolve().parent / "root_fixtures"
+SCRIPT = "#!/bin/sh\n# test script for {name}\necho ZEUS_STAGE=change\nexit 0\n"
+
+
+def install_list(ctx, change=None):
+    """Write the fixture list into ctx.etc/actions.json: each entry's test script goes into libexec/actions and its real
+    sha256 into the entry. change(doc) may edit the document first. Returns the exact bytes written."""
+    import hashlib
+    import json
+    doc = json.loads((FIXTURES / "actions.json").read_text(encoding="utf-8"))
+    for entry in doc["actions"]:
+        body = SCRIPT.format(name=entry["id"]).encode()
+        (ctx.libexec / "actions" / entry["script"]).write_bytes(body)
+        entry["sha256"] = hashlib.sha256(body).hexdigest()
+    if change:
+        change(doc)
+    raw = json.dumps(doc, indent=1, ensure_ascii=False).encode("utf-8")
+    (ctx.etc / "actions.json").write_bytes(raw)
+    return raw
+
+
+def install_config(ctx, change=None):
+    import json
+    doc = json.loads((FIXTURES / "config.json").read_text(encoding="utf-8"))
+    if change:
+        change(doc)
+    (ctx.etc / "config.json").write_bytes(json.dumps(doc).encode())
+    return doc
+
+
+def make_key(action="close-media-lan", **over):
+    """A Key with random ids (no real key material: the public key bytes are placeholders here)."""
+    from zeus_root import canon
+    from zeus_root.config import Key
+    cid = os.urandom(32)
+    fields = dict(id=cid, ref=canon.key_ref(cid), action=action, user=os.urandom(16), node_id="nTEST1CNTRL",
+                  node_name="phone", login="owner@example.com", alg=-7, spki=os.urandom(91), be=True, claim="synced",
+                  words="apple brook cider delta ember", label="phone", made="2026-11-12T08:00:00+00:00", revoked=None)
+    fields.update(over)
+    return Key(**fields)
+
+
+def good_tree(ctx):
+    """Give the tree under ctx the owners' modes of design §16.3 (the current user plays root and the gate)."""
+    from zeus_root import config
+    config.save_keys(ctx, {})
+    config.save_owners(ctx, [])
+    modes = {ctx.etc: 0o755, ctx.etc / "config.json": 0o644, ctx.etc / "actions.json": 0o644, ctx.run: 0o755,
+             ctx.run / "inbox": 0o700, ctx.run / "enrol": 0o700, ctx.run / "work": 0o700,
+             ctx.run / "quarantine": 0o700, ctx.run / "results": 0o755, ctx.lib: 0o700, ctx.log: 0o755,
+             ctx.libexec: 0o755, ctx.libexec / "actions": 0o755}
+    for p in (ctx.libexec / "actions").iterdir():
+        modes[p] = 0o755
+    for p, m in modes.items():
+        os.chmod(p, m)

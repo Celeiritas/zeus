@@ -41,14 +41,17 @@ def _fsync_dir(folder):
         os.close(fd)
 
 
-def write_file(path, data, mode=0o600):
-    """Write bytes to a temporary name beside path, flush, set the mode and rename into place."""
+def write_file(path, data, mode=0o600, owner=None):
+    """Write bytes to a temporary name beside path, flush, set the mode (and owner=(uid, gid) if given) and rename into
+    place, so a reader sees the old file or the new one, never half of one, and never the new one with loose rights."""
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix="." + path.name + ".")
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
+        if owner is not None and os.name == "posix":
+            os.chown(tmp, *owner)
         os.chmod(tmp, mode)
         os.replace(tmp, path)
     except BaseException:
