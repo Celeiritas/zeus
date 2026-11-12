@@ -33,7 +33,9 @@ The order of the checks is the plan's D10 as amended after the Z2a hostile revie
   the first answer for its nonce;
 - then a record older than the last one root accepted with the same key (its signed exp is not later): a try the gate
   held back while the owner pressed again, refused quietly (plan v6, item 13; not counted, no buzz), so it can neither
-  run a second time with a passkey that keeps its counter at 0 nor raise a false "copied" with one that counts;
+  run a second time with a passkey that keeps its counter at 0 nor raise a false "copied" with one that counts. That
+  holds while the gate issues exp in order (root alone cannot order two presses); the key page's own check of the
+  last exp it signed with each key (Z4, contract 8b) makes it hold whatever the gate does;
 - only then the counter and the BE flag (a genuine, fresh, never-seen record whose counter did not go up is a sign of
   a copied key), then the list (a yes given before the list changed).
 
@@ -313,7 +315,8 @@ def _checks(rec, keys, cfg, list_sha, now, counter, last_exp, spend_once, signed
         raise _refuse("expired")
     if not spend_once():
         raise _refuse("used-nonce")
-    # 6b. a try older than the last one accepted with this key (the gate held it back): quiet, never a buzz
+    # 6b. a try older than the last one accepted with this key (the gate held it back): quiet, never a buzz. It
+    #     holds while the gate issues exp in order; the key page's own check (Z4) covers a gate that does not
     if last_exp is not None and rec["exp"] <= last_exp:
         raise _refuse("older-than-last")
     # 7. the counter (either one not zero and the new one not larger) and the BE flag

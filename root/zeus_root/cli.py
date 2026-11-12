@@ -7,7 +7,7 @@ zeus-root-reach@<run>.service and zeus-root-boot.service. Before anything else i
 from constants (Ctx.system()). Tests pass their own Ctx and keep their environment.
 
 Exit codes: 0 done (a refusal is an answer, not an error) · 1 failed (not root, not installed, a state file that does
-not read back, root's own files broken for a tick or boot) · 2 usage.
+not read back, root's own files broken for a tick or boot, lib/lock held elsewhere at boot) · 2 usage.
 """
 import os
 import sys
