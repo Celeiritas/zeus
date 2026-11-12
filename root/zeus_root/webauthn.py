@@ -5,10 +5,17 @@ installed list's hash, the time, the key's stored counter and `spend` (state.spe
 back `Verified` or a `Refusal` (or `canon.Malformed` for a record without exactly the expected shape, which the runner
 files as garbage). `spend` is its one side effect: it is called exactly once for every record that reaches verify with
 a nonce of the right shape, whatever verify answers, and never for one whose nonce does not (re-check R1, 2026-11-11).
-It gets the record's exp too, and the runner keeps the nonce until a day after the later of now and that exp (0.8.1
-re-check, finding 2). A record root refused here can then never run later, sent again intact or not, even one whose exp
-was too far ahead when it was refused. Entries the runner quarantines before verify (the file rules, the strict parse)
-spend nothing and get no result. Its answer is read at one fixed point only (step 6 below).
+Once the signature has checked out, it gets the record's exp too (the challenge commits to exp, so that exp is the one
+the phone signed), and the runner keeps the nonce until a day after the later of now and that exp; before that it gets
+None and the nonce is kept a day (0.8.1 re-check, finding 2, and the re-check of its fix, finding B). So a record root
+refused can never run later when it is sent again as it was, even one whose exp was too far ahead, and a spoiled copy
+of a record within root's 180 s cannot let it run later either. Root does not close one case: a record whose exp is
+more than a day ahead, sent first as a spoiled copy (any part spoiled, its exp moved or not), is refused before the
+signature (as `challenge`, counted, or as garbage, not counted, when the gate spoils the device), so root never learns
+the signed exp and keeps the nonce one day, and the intact record can run once its far exp comes near. Only the key
+page's exp check (contract §8b, Z4) stops that case. Entries
+the runner quarantines before verify (the file rules, the strict parse) spend nothing and get no result. Its answer is
+read at one fixed point only (step 6 below).
 
 The order of the checks is the plan's D10 as amended after the Z2a hostile review, and it matters:
 - the key and the device first, so a record that names no registered key (or another device) is garbage and never
@@ -190,36 +197,43 @@ def verify(rec, keys, cfg, list_sha, now, counter, spend):
     """Check one run or check-key record (D10, amended). keys: registered keys by ref; cfg: config.Config; list_sha:
     the installed actions.json's sha256 hex; now: unix seconds; counter: the key's stored sign counter (None before its
     first use, read as 0); spend(nonce, exp) -> bool: marks the nonce used, to be kept until a day after the later of
-    now and exp (the record's exp when it is an int, else None), and says whether this was the first time (the runner
-    passes state.spend_nonce bound to its ctx).
+    now and exp, and says whether this was the first time (the runner passes state.spend_nonce bound to its ctx). exp
+    is the record's exp once the signature has checked out (the exp the phone signed), else None: a record refused
+    before that point can name any exp, and a far one would leave a nonce file for years.
 
     The nonce's shape is checked first. A record whose nonce has the wrong shape raises canon.Malformed and spends
     nothing (it can name no run). For any other record spend is called exactly once, whatever the answer: Verified, a
-    Refusal, canon.Malformed for the rest of the record, or an error. So a record that was refused, even one the gate
-    spoiled on purpose before sending it again intact, or one whose exp was too far ahead, can never run later
-    (re-check R1; 0.8.1 re-check, finding 2). An error raised by spend itself is raised as it is, and spend is not
-    called a second time. Returns Verified; raises Refusal or Malformed."""
+    Refusal, canon.Malformed for the rest of the record, or an error. So a record that was refused and is sent again as
+    it was can never run later, even one the gate spoiled on purpose before sending it again intact (re-check R1), and
+    even one whose exp was too far ahead (0.8.1 re-check, finding 2). Not covered: a spoiled first copy of a record
+    whose exp is more than a day ahead is refused before the signature and keeps the nonce one day only; the key
+    page's exp check stops that case (module docstring). An error raised by spend itself is raised as it is, and spend is not called a second time. Returns
+    Verified; raises Refusal or Malformed."""
     nonce = rec.get("nonce") if isinstance(rec, dict) else None
     if not canon.valid_nonce(nonce):
         raise canon.Malformed("no well-formed nonce")
-    exp = rec.get("exp")
-    exp = exp if type(exp) is int else None
-    called, first = False, None
+    called, first, signed_exp = False, None, None
+
+    def signed(exp):
+        """The signature checked out: the challenge, which commits to exp, matched, so exp is the one the phone signed."""
+        nonlocal signed_exp
+        signed_exp = exp
 
     def spend_once():
         nonlocal called, first
         if not called:
             called = True
-            first = spend(nonce, exp)
+            first = spend(nonce, signed_exp)
         return first
     try:
-        return _checks(rec, keys, cfg, list_sha, now, counter, spend_once)
+        return _checks(rec, keys, cfg, list_sha, now, counter, spend_once, signed)
     finally:
         spend_once()
 
 
-def _checks(rec, keys, cfg, list_sha, now, counter, spend_once):
-    """verify()'s checks in their order; spend_once() spends the record's nonce (once) and says if it was unspent."""
+def _checks(rec, keys, cfg, list_sha, now, counter, spend_once, signed):
+    """verify()'s checks in their order; spend_once() spends the record's nonce (once) and says if it was unspent;
+    signed(exp) is called once the signature checked out, with the exp it covers."""
     raw = _shape(rec)
     auth = parse_auth_get(raw["authenticatorData"])
     # root's own challenge, from the record's fields and root's own origin (never one from the record)
@@ -257,6 +271,7 @@ def _checks(rec, keys, cfg, list_sha, now, counter, spend_once):
     # 5. the signature, before anything that could say "copied"
     if not verify_sig(key.alg, key.spki, raw["authenticatorData"], raw["clientDataJSON"], raw["signature"]):
         raise _refuse("signature")
+    signed(rec["exp"])
     # 6. freshness (now < exp <= now + 180), then the nonce: a genuine record sent late or sent again is a resend, not
     #    counted and never a buzz. verify() spends the nonce for every refusal too; only here does its answer decide
     if not now < rec["exp"] <= now + EXP_AHEAD_S:

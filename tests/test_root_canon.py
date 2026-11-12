@@ -288,6 +288,13 @@ class CtxTest(unittest.TestCase):
                 return timedelta(0)
         self.assertEqual(iso(mock.Mock(tz=DayAhead()), 1794000000.9), "2026-11-06T21:20:00+00:00")
 
+    def test_server_zone_uses_the_pure_python_reader(self):
+        """Re-check of f4e8ad8, note D: the zone comes from zoneinfo's pure-Python class, never the C one. Python 3.13
+        and 3.14 fixed the C reader's crash on an all-summer-time file, so there the child-Python test below would pass
+        with the C reader put back; this one does not."""
+        from zoneinfo import _zoneinfo
+        self.assertIs(type(self.zone(_tzif())), _zoneinfo.ZoneInfo)
+
     def test_server_zone_all_summer_time_file_does_not_kill_python(self):
         """0.8.1 re-check finding 1a: a well-formed file whose every zone type is marked summer time made CPython's C
         zoneinfo read out of bounds and kill the process (exit 139), which no except can catch. It runs in a child

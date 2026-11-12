@@ -358,14 +358,23 @@ class TestRefusals(Base):
                     self.refused("used-nonce", intact, counter=stored, spend=spend)
                     self.assertEqual(spend.calls, 2)
 
-    def test_spend_gets_the_records_exp(self):
-        """0.8.1 re-check finding 2: spend gets the record's exp (an int) so the nonce outlives it; None when the exp is
-        not an int (such a record is malformed and can never verify)."""
+    def test_spend_gets_the_exp_only_once_signed(self):
+        """0.8.1 re-check finding 2, and finding B of the re-check of its fix: spend gets the record's exp once the
+        signature checked out (then it is the exp the phone signed), so a genuine record's nonce outlives it; None for a
+        record refused before that point (its exp is only the gate's word) and when the exp is not an int (malformed)."""
         exp = self.fx["record"]["exp"]
         self.verify(self.forge())
         self.assertEqual(self.spender.exps, [exp])
         self.refused("expired", self.forge(), now=exp - 2 * 86400)
         self.assertEqual(self.spender.exps, [exp])
+        before = [("wrong-device", self.forge(seen={"node_id": "nOTHERDEVICE"})),
+                  ("unknown-key", dict(self.forge(), credentialId=canon.b64u_encode(b"another key"))),
+                  ("challenge", self.forge(exp=exp + 86400)),
+                  ("signature", self.forge(bad_sig=True))]
+        for reason, rec in before:
+            with self.subTest(refused=reason):
+                self.refused(reason, rec)
+                self.assertEqual(self.spender.exps, [None])
         for bad in (True, 1.5, "1794000000"):
             with self.subTest(exp=bad):
                 with self.assertRaises(canon.Malformed):
@@ -393,6 +402,58 @@ class TestRefusals(Base):
             ctx.now.t = exp + 86400 + 1
             state.prune_nonces(ctx)
             self.assertTrue(state.spend_nonce(ctx, self.fx["record"]["nonce"]))
+
+    def test_junk_with_a_far_exp_is_forgotten_after_a_day(self):
+        """Re-check of f4e8ad8, finding B: a record refused before its signature checked out keeps its nonce one day,
+        whatever exp it names. Kept until that exp, junk with exp 2^53 - 1 (an unknown key, or a real key with the
+        challenge for that exp and a bad signature) left a nonce file until 2106, and garbage never pauses or buzzes."""
+        import tempfile
+        from tests import root_support
+        from zeus_root import state
+        far = 2 ** 53 - 1
+        rec = self.fx["record"]
+        far_challenge = canon.challenge(rec["action"], rec["params"], rec["list"], rec["nonce"], far, self.cfg.origin)
+        junk = [("unknown-key", dict(self.forge(exp=far), credentialId=canon.b64u_encode(b"another key"))),
+                ("signature", self.forge(client={"challenge": canon.b64u_encode(far_challenge)}, exp=far,
+                                         bad_sig=True))]
+        for reason, bad in junk:
+            with self.subTest(refused=reason), tempfile.TemporaryDirectory() as tmp:
+                ctx = root_support.make_ctx(tmp)
+
+                def spend(nonce, e):
+                    return state.spend_nonce(ctx, nonce, e)
+                self.refused(reason, bad, now=ctx.now.t, spend=spend)
+                self.assertEqual(len(list((ctx.lib / "nonces").iterdir())), 1)
+                ctx.now.t += 86400 + 1
+                state.prune_nonces(ctx)
+                self.assertEqual(list((ctx.lib / "nonces").iterdir()), [])
+
+    def test_far_exp_seen_spoiled_first_is_left_to_the_key_page(self):
+        """Re-check of f4e8ad8, finding A, pinned so the limit stays in sight: root cannot learn the signed exp from a
+        copy it refuses before the signature. So a record whose exp is two days away, first sent spoiled (its exp moved
+        near or not), keeps its nonce one day, and the intact record sent 60 s before its exp verifies. Only the key
+        page's exp check stops this (contract §8b, Z4), and Z5 installs nothing before it. If root ever closes this
+        case, this test changes together with the contract."""
+        import tempfile
+        from tests import root_support
+        from zeus_root import state
+        exp = self.fx["record"]["exp"]
+        then = exp - 2 * 86400
+        intact = self.forge()
+        spoiled = [("wrong-device", self.forge(seen={"node_id": "nOTHERDEVICE"})),
+                   ("wrong-device", self.forge(seen={"node_id": "nOTHERDEVICE"}, exp=then + 100)),
+                   ("challenge", self.forge(exp=then + 100))]
+        for i, (reason, bad) in enumerate(spoiled):
+            with self.subTest(case=i, refused=reason), tempfile.TemporaryDirectory() as tmp:
+                ctx = root_support.make_ctx(tmp)
+
+                def spend(nonce, e):
+                    return state.spend_nonce(ctx, nonce, e)
+                ctx.now.t = then
+                self.refused(reason, bad, now=then, spend=spend)
+                ctx.now.t = exp - 60
+                state.prune_nonces(ctx)
+                self.assertTrue(self.verify(intact, now=ctx.now.t, spend=spend))
 
     def test_a_forgery_keeps_its_reason_when_the_nonce_is_spent(self):
         """`used-nonce` is decided only after the signature and freshness: a forgery carrying a spent nonce is still a

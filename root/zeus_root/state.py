@@ -114,9 +114,10 @@ def _nonce_path(ctx, nonce):
 
 
 def spend_nonce(ctx, nonce, exp=None):
-    """Mark a nonce used: True the first time, False until it is pruned. exp is the record's expiry (unix seconds; None,
-    or anything but an int, for a record without one). The nonce is kept until a day after the later of the moment it
-    was spent and exp, so a record refused because its exp was too far ahead cannot run once that exp comes near:
+    """Mark a nonce used: True the first time, False until it is pruned. exp is the signed expiry of the nonce's record
+    (unix seconds), or None (anything but an int counts as None) when there is none or it was not checked: webauthn
+    passes it only once the signature checked out. The nonce is kept until a day after the later of the moment it was
+    spent and exp, so a genuine record refused because its exp was too far ahead cannot run once that exp comes near:
     keeping it one day only let a lying gate hand the same signed record in again a day later (0.8.1 re-check,
     finding 2)."""
     path = _nonce_path(ctx, nonce)
@@ -124,21 +125,29 @@ def spend_nonce(ctx, nonce, exp=None):
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW | _CLOEXEC, 0o600)
     except FileExistsError:
         return False
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
     t = ctx.now()
     if type(exp) is int and exp > t:
         t = max(t, min(exp, NONCE_KEEP_LIMIT))
-    os.utime(path, (t, t))     # the file's time is when it was spent by root's clock, or its record's exp if later
+    # the file's time is when it was spent by root's clock, or its record's exp if later. Set on the open file before
+    # its fsync, so a crash cannot leave the file with only its creation time (kept a day instead of until exp)
+    on_fd = os.utime in os.supports_fd
+    try:
+        if on_fd:
+            os.utime(fd, (t, t))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    if not on_fd:
+        os.utime(path, (t, t))     # Windows (tests only): no utime on a file descriptor
     _fsync_dir(path.parent)
     return True
 
 
 def prune_nonces(ctx):
-    """Forget a nonce a day after its file's time (when it was spent, or its record's exp if later): by then its record
-    expired a day ago and can never be fresh again."""
+    """Forget a nonce a day after its file's time (when it was spent, or its record's signed exp if later). By then the
+    record it was spent for expired a day ago, or (exp None) was refused before its signature checked out a day ago,
+    which outlasts any exp root accepts (180 s). A record with an exp more than a day ahead that root only ever saw
+    spoiled is the key page's to stop (contract §8b)."""
     cutoff = ctx.now() - DAY_S
     with os.scandir(ctx.lib / "nonces") as it:
         for e in it:

@@ -73,6 +73,25 @@ class NonceTest(StateCase):
         state.prune_nonces(self.ctx)
         self.assertFalse(state.spend_nonce(self.ctx, NONCE))
 
+    def test_file_time_is_set_before_its_fsync(self):
+        """Re-check of f4e8ad8, note C: the nonce file gets its time on the open file before the file's fsync, so a
+        crash cannot leave it with only its creation time (kept a day instead of until its exp). Linux only: Windows
+        has no utime on a file descriptor, so there the time is set by name after the close."""
+        root_support.need("linux")
+        import stat
+        from unittest import mock
+        real, seen = os.fsync, []
+
+        def fsync(fd):
+            st = os.fstat(fd)
+            if stat.S_ISREG(st.st_mode):
+                seen.append(st.st_mtime)
+            real(fd)
+        exp = self.t0 + 3 * 86400
+        with mock.patch.object(state.os, "fsync", fsync):
+            self.assertTrue(state.spend_nonce(self.ctx, NONCE, exp))
+        self.assertEqual(seen, [exp])
+
     def test_bad_nonce_refused(self):
         for nonce in ("A" * 42, "../" + "A" * 40, None, "A" * 42 + "B"):
             with self.subTest(nonce=nonce), self.assertRaises(ValueError):
