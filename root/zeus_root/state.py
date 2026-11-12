@@ -41,14 +41,15 @@ def _fsync_dir(folder):
         os.close(fd)
 
 
-def _write(path, data):
+def write_file(path, data, mode=0o600):
+    """Write bytes to a temporary name beside path, flush, set the mode and rename into place."""
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix="." + path.name + ".")
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.chmod(tmp, 0o600)
+        os.chmod(tmp, mode)
         os.replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):
@@ -73,7 +74,7 @@ def _read(ctx, name):
 
 
 def _save(ctx, name, obj):
-    _write(ctx.lib / name, canon.canonical(obj) + b"\n")
+    write_file(ctx.lib / name, canon.canonical(obj) + b"\n")
 
 
 def _number(x, name):
