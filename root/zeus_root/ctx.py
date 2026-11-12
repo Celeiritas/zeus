@@ -4,6 +4,7 @@ Production builds it with `Ctx.system()` from constants only: no environment var
 changes a path, an id, a command or a limit (design §16). Tests build their own on temporary folders
 (tests/root_support.py: make_ctx) and shorten the limits through it.
 """
+import io
 import os
 import subprocess
 import time
@@ -15,6 +16,7 @@ from typing import Callable, NamedTuple, Optional
 GATE_ACCOUNT = "zeus-root-gate"
 COMMAND_PATH = "/usr/sbin:/usr/bin"
 LOCALTIME = "/etc/localtime"
+ZONE_FILE_MAX = 64 * 1024              # a real zone file is a few KB
 
 
 class CmdResult(NamedTuple):
@@ -67,13 +69,35 @@ class Ctx:
 def server_zone(path=LOCALTIME):
     """The server's zone read from /etc/localtime itself (root-owned), never from TZ: sudo passes TZ through, so a
     normal user could otherwise shift every time zeus-root writes (Z2a hostile review, finding 7). Each moment keeps
-    its own offset, so summer time comes out right. A missing or unreadable file gives UTC."""
+    its own offset, so summer time comes out right.
+
+    The file is read whole (at most ZONE_FILE_MAX bytes) and parsed from memory by a reader that refuses to read past
+    its end: CPython's zoneinfo reads a version 2 footer one byte at a time until a newline and loops for ever when the
+    file ends first, and raises struct.error or AssertionError on some cut files (re-check R2). A missing, unreadable,
+    oversized or damaged file, or any error while parsing it, gives UTC: a wrong offset in a log line is better than a
+    runner that never starts."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read(ZONE_FILE_MAX + 1)
+    except OSError:
+        return timezone.utc
+    if len(data) > ZONE_FILE_MAX:
+        return timezone.utc
     try:
         from zoneinfo import ZoneInfo
-        with open(path, "rb") as f:
-            return ZoneInfo.from_file(f)
-    except (OSError, ValueError, ImportError):
+        return ZoneInfo.from_file(_NoReadPastEnd(data))
+    except Exception:
         return timezone.utc
+
+
+class _NoReadPastEnd(io.BytesIO):
+    """A zone file in memory whose read(n) raises EOFError when fewer than n bytes are left (n < 0 reads the rest)."""
+
+    def read(self, n=-1):
+        b = super().read(n)
+        if n is not None and n >= 0 and len(b) < n:
+            raise EOFError("the zone file ends early")
+        return b
 
 
 def _text(b):

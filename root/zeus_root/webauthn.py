@@ -3,7 +3,9 @@
 `verify()` reads no file, clock or command. The runner gives it the record, the registered keys, the config, the
 installed list's hash, the time, the key's stored counter and `spend` (state.spend_nonce bound to its ctx), and gets
 back `Verified` or a `Refusal` (or `canon.Malformed` for a record without exactly the expected shape, which the runner
-files as garbage). `spend` is its one side effect, and it is called at most once, at one fixed point.
+files as garbage). `spend` is its one side effect: it is called exactly once for every record whose nonce has the right
+shape, whatever verify answers, and never for one whose nonce does not (re-check R1, 2026-11-11). A record root refused
+can then never run later, sent again intact or not. Its answer is read at one fixed point only (step 6 below).
 
 The order of the checks is the plan's D10 as amended after the Z2a hostile review, and it matters:
 - the key and the device first, so a record that names no registered key (or another device) is garbage and never
@@ -13,8 +15,9 @@ The order of the checks is the plan's D10 as amended after the Z2a hostile revie
 - then the signature, so junk that names a real key can never make a "your key may be copied" buzz (Review Focus 2;
   the private design's 6.3 lists the counter first);
 - then freshness and the spent nonce: a genuine record sent late or sent again is `expired` or `used-nonce`, not
-  counted and never a buzz (6.3 M1). The nonce is spent here, before anything that can still refuse, so every genuine
-  fresh record is answered exactly once whatever comes after;
+  counted and never a buzz (6.3 M1). `used-nonce` is decided here and only here, so a record refused for an earlier
+  fault keeps that reason (a forgery stays counted even with a spent nonce), and a record that gets past this point is
+  the first answer for its nonce;
 - only then the counter and the BE flag (a genuine, fresh, never-seen record whose counter did not go up is a sign of
   a copied key), then the list (a yes given before the list changed).
 
@@ -30,7 +33,8 @@ from . import canon
 AUTH_GET_LEN = 37                      # rpIdHash 32 + flags 1 + signCount 4
 FLAG_UP, FLAG_UV, FLAG_BE, FLAG_BS, FLAG_AT, FLAG_ED = 0x01, 0x04, 0x08, 0x10, 0x40, 0x80
 ES256, RS256 = -7, -257
-RSA_MIN_BITS = 2048
+RSA_MIN_BITS, RSA_MAX_BITS = 2048, 4096  # an RS256 key: an odd modulus of 2048 to 4096 bits
+RSA_E_LIMIT = 2 ** 32                  # and an odd public exponent from 3 to 2^32 - 1 (65537 in practice)
 EXP_AHEAD_S = 180                      # a challenge expires at most 180 s after it was issued
 RECORD_TYPES = ("run", "check-key")
 RECORD_SCHEMA = {"type": str, "action": str, "params": dict, "list": str, "nonce": str, "exp": int,
@@ -120,8 +124,11 @@ def parse_client(raw, typ):
 
 def _public_key(alg, spki):
     """The public key when spki is a DER SubjectPublicKeyInfo that fits alg, else None. ES256: a P-256 key. RS256: an
-    RSA key of at least 2048 bits with an odd exponent of at least 3. Any other algorithm, key type or size, a key
-    type `cryptography` does not know (UnsupportedAlgorithm), or bytes that are no key give None."""
+    RSA key with an odd modulus of 2048 to 4096 bits and an odd exponent from 3 to 2^32 - 1. `cryptography` loads RSA
+    keys OpenSSL can never verify with (an even modulus, over 16384 bits, an exponent over 64 bits; re-check R4), and
+    such a key would turn every use into a counted `signature` refusal, so the bounds are checked here. Any other
+    algorithm, key type or size, a key type `cryptography` does not know (UnsupportedAlgorithm), or bytes that are no
+    key give None."""
     from cryptography.exceptions import UnsupportedAlgorithm
     from cryptography.hazmat.primitives.asymmetric import ec, rsa
     from cryptography.hazmat.primitives.serialization import load_der_public_key
@@ -131,9 +138,9 @@ def _public_key(alg, spki):
         return None
     if alg == ES256 and isinstance(pub, ec.EllipticCurvePublicKey) and isinstance(pub.curve, ec.SECP256R1):
         return pub
-    if alg == RS256 and isinstance(pub, rsa.RSAPublicKey) and pub.key_size >= RSA_MIN_BITS:
-        e = pub.public_numbers().e
-        if e >= 3 and e % 2 == 1:
+    if alg == RS256 and isinstance(pub, rsa.RSAPublicKey) and RSA_MIN_BITS <= pub.key_size <= RSA_MAX_BITS:
+        nums = pub.public_numbers()
+        if nums.n % 2 == 1 and 3 <= nums.e < RSA_E_LIMIT and nums.e % 2 == 1:
             return pub
     return None
 
@@ -180,8 +187,32 @@ def verify(rec, keys, cfg, list_sha, now, counter, spend):
     """Check one run or check-key record (D10, amended). keys: registered keys by ref; cfg: config.Config; list_sha:
     the installed actions.json's sha256 hex; now: unix seconds; counter: the key's stored sign counter (None before its
     first use, read as 0); spend(nonce) -> bool: marks the nonce used and says whether this was the first time (the
-    runner passes state.spend_nonce bound to its ctx). spend is called once, only for a record whose signature checks
-    out and that is fresh. Returns Verified; raises Refusal, or canon.Malformed for a record of the wrong shape."""
+    runner passes state.spend_nonce bound to its ctx).
+
+    The nonce's shape is checked first. A record whose nonce has the wrong shape raises canon.Malformed and spends
+    nothing (it can name no run). For any other record spend is called exactly once, whatever the answer: Verified, a
+    Refusal, canon.Malformed for the rest of the record, or an error. So a record that was refused, even one the gate
+    spoiled on purpose before sending it again intact, can never run later (re-check R1). An error raised by spend
+    itself is raised as it is, and spend is not called a second time. Returns Verified; raises Refusal or Malformed."""
+    nonce = rec.get("nonce") if isinstance(rec, dict) else None
+    if not canon.valid_nonce(nonce):
+        raise canon.Malformed("no well-formed nonce")
+    called, first = False, None
+
+    def spend_once():
+        nonlocal called, first
+        if not called:
+            called = True
+            first = spend(nonce)
+        return first
+    try:
+        return _checks(rec, keys, cfg, list_sha, now, counter, spend_once)
+    finally:
+        spend_once()
+
+
+def _checks(rec, keys, cfg, list_sha, now, counter, spend_once):
+    """verify()'s checks in their order; spend_once() spends the record's nonce (once) and says if it was unspent."""
     raw = _shape(rec)
     auth = parse_auth_get(raw["authenticatorData"])
     # root's own challenge, from the record's fields and root's own origin (never one from the record)
@@ -219,11 +250,11 @@ def verify(rec, keys, cfg, list_sha, now, counter, spend):
     # 5. the signature, before anything that could say "copied"
     if not verify_sig(key.alg, key.spki, raw["authenticatorData"], raw["clientDataJSON"], raw["signature"]):
         raise _refuse("signature")
-    # 6. freshness (now < exp <= now + 180), then the nonce, spent here: a genuine record sent late or sent again is
-    #    a resend, not counted and never a buzz, and everything after this point answers a record only once
+    # 6. freshness (now < exp <= now + 180), then the nonce: a genuine record sent late or sent again is a resend, not
+    #    counted and never a buzz. verify() spends the nonce for every refusal too; only here does its answer decide
     if not now < rec["exp"] <= now + EXP_AHEAD_S:
         raise _refuse("expired")
-    if not spend(rec["nonce"]):
+    if not spend_once():
         raise _refuse("used-nonce")
     # 7. the counter (either one not zero and the new one not larger) and the BE flag
     stored = 0 if counter is None else counter

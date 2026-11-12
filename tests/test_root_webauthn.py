@@ -214,7 +214,7 @@ class TestVectors(unittest.TestCase):
                 with self.assertRaises(webauthn.Refusal) as caught:
                     webauthn.verify(rec, {key.ref: other}, _cfg(), rec["list"], rec["exp"] - 60, 1, spend)
                 self.assertEqual(caught.exception.reason, "signature")
-                self.assertEqual(spend.calls, 0)
+                self.assertEqual((spend.calls, spend.spent), (1, {rec["nonce"]}))
 
 
 class TestReplay(unittest.TestCase):
@@ -253,7 +253,27 @@ class TestReplay(unittest.TestCase):
                     spend = Spender(spent)
                     r = self.refusal(rec, keys, rec["exp"] + 2 * 86400, spend)
                     self.assertEqual((r.reason, r.cls, r.attention), ("expired", "not-counted", None))
-                    self.assertEqual(spend.calls, 0)
+                    self.assertEqual((spend.calls, spend.spent), (1, {rec["nonce"]}))
+
+    def test_refused_once_then_intact_is_used_nonce(self):
+        """Re-check R1 on the real records: the gate spoils an unsigned field or a byte of the signature, root refuses,
+        then the intact record comes inside its window. With a stored counter of 1 the intact record alone would run
+        (the control); after the refusal it is `used-nonce`."""
+        for name, rec, keys in self.each():
+            sig = canon.b64u_decode(rec["signature"])
+            self.assertTrue(self.w.verify(rec, keys, _cfg(), rec["list"], rec["exp"] - 60, 1, Spender()))
+            for reason, bad in (("wrong-device", dict(rec, seen=dict(rec["seen"], node_id="nOTHERDEVICE"))),
+                                ("wrong-user", dict(rec, userHandle=None)),
+                                ("signature", dict(rec, signature=canon.b64u_encode(sig[:-1] + bytes([sig[-1] ^ 1]))))):
+                with self.subTest(name, spoiled=reason):
+                    spend = Spender()
+                    with self.assertRaises(self.w.Refusal) as caught:
+                        self.w.verify(bad, keys, _cfg(), rec["list"], rec["exp"] - 60, 1, spend)
+                    self.assertEqual(caught.exception.reason, reason)
+                    with self.assertRaises(self.w.Refusal) as caught:
+                        self.w.verify(rec, keys, _cfg(), rec["list"], rec["exp"] - 60, 1, spend)
+                    self.assertEqual(caught.exception.reason, "used-nonce")
+                    self.assertEqual(spend.calls, 2)
 
     def test_same_counter_fresh_and_unspent_is_counter(self):
         """The one case that still says "copied": a genuine signature, fresh, a nonce never seen, and a counter that
@@ -273,31 +293,91 @@ class TestRefusals(Base):
         self.assertEqual(got.auth.count, 7)
         self.assertEqual((self.spender.calls, self.spender.spent), (1, {self.fx["record"]["nonce"]}))
 
-    def test_spend_only_after_signature_and_freshness(self):
-        """spend is not called for a record refused before or at freshness, and called exactly once for every record
-        that got past it, whatever comes after (counter, BE flag, list, or accepted)."""
+    def test_spend_once_for_every_answer(self):
+        """Re-check R1: spend is called exactly once for every record whose nonce has the right shape, whatever the
+        answer (each refusal, malformed, accepted), and never for a record whose nonce has the wrong shape."""
+        nonce = self.fx["record"]["nonce"]
         exp = self.fx["record"]["exp"]
-        before = [("unknown-key", self.forge(), {"keys": {}}),
-                  ("wrong-device", self.forge(seen={"node_id": "nOTHERDEVICE"}), {}),
-                  ("origin", self.forge(client={"origin": "https://h.example:4444"}), {}),
-                  ("uv", self.forge(flags=FLAGS_OK & ~0x04), {}),
-                  ("signature", self.forge(bad_sig=True), {}),
-                  ("expired", self.forge(), {"now": exp}),
-                  ("expired", self.forge(), {"now": exp - 181})]
-        for reason, rec, kw in before:
+        refusals = [("unknown-key", self.forge(), {"keys": {}}),
+                    ("wrong-device", self.forge(seen={"node_id": "nOTHERDEVICE"}), {}),
+                    ("origin", self.forge(client={"origin": "https://h.example:4444"}), {}),
+                    ("uv", self.forge(flags=FLAGS_OK & ~0x04), {}),
+                    ("signature", self.forge(bad_sig=True), {}),
+                    ("expired", self.forge(), {"now": exp}),
+                    ("expired", self.forge(), {"now": exp - 181}),
+                    ("counter", self.forge(count=7), {"counter": 7}),
+                    ("be-changed", self.forge(flags=FLAGS_OK & ~0x18), {}),
+                    ("list-changed", self.forge(), {"list_sha": "0" * 64}),
+                    ("used-nonce", self.forge(), {"spend": Spender({nonce})})]
+        for reason, rec, kw in refusals:
             with self.subTest(reason=reason, **{k: v for k, v in kw.items() if k == "now"}):
                 self.refused(reason, rec, **kw)
-                self.assertEqual(self.spender.calls, 0)
-        after = [("counter", self.forge(count=7), {"counter": 7}),
-                 ("be-changed", self.forge(flags=FLAGS_OK & ~0x18), {}),
-                 ("list-changed", self.forge(), {"list_sha": "0" * 64}),
-                 ("used-nonce", self.forge(), {"spend": Spender({self.fx["record"]["nonce"]})})]
-        for reason, rec, kw in after:
-            with self.subTest(reason=reason):
-                self.refused(reason, rec, **kw)
-                self.assertEqual(self.spender.calls, 1)
+                self.assertEqual((self.spender.calls, self.spender.spent), (1, {nonce}))
+        for change in ({"extra": 1}, {"exp": True}, {"credentialId": "not base64url!"},
+                       {"authenticatorData": canon.b64u_encode(b"\x00" * 36)}):
+            with self.subTest(malformed=sorted(change)):
+                with self.assertRaises(canon.Malformed):
+                    self.verify(dict(self.forge(), **change))
+                self.assertEqual((self.spender.calls, self.spender.spent), (1, {nonce}))
         self.verify(self.forge())
+        self.assertEqual((self.spender.calls, self.spender.spent), (1, {nonce}))
+        for bad in ("short", None, 7, "A" * 42 + "B", "A" * 44):
+            with self.subTest(nonce=bad):
+                with self.assertRaises(canon.Malformed):
+                    self.verify(dict(self.forge(), nonce=bad))
+                self.assertEqual(self.spender.calls, 0)
+        with self.assertRaises(canon.Malformed):
+            self.verify(["not", "a", "record"])
+        self.assertEqual(self.spender.calls, 0)
+
+    def test_refused_then_sent_again_intact_is_used_nonce(self):
+        """Re-check R1: the gate spoils one part of a genuine record A (an unsigned field, a byte of the signature, the
+        signed fields, the authenticator data, the shape), root refuses it, and the gate sends A again intact inside its
+        180 s. The refusal spent the nonce, so A is `used-nonce` (not counted, no buzz) and never runs, for a key that
+        keeps its counter at 0 and for one that counts. The control shows A alone would have run."""
+        for count, stored in ((0, None), (7, 5)):
+            intact = self.forge(count=count)
+            sig = canon.b64u_decode(intact["signature"])
+            spoiled = [("wrong-device", dict(intact, seen=dict(intact["seen"], node_id="nOTHERDEVICE"))),
+                       ("wrong-user", dict(intact, userHandle=None)),
+                       ("unknown-key", dict(intact, credentialId=canon.b64u_encode(b"another key"))),
+                       ("signature", dict(intact, signature=canon.b64u_encode(sig[:-1] + bytes([sig[-1] ^ 1])))),
+                       ("challenge", dict(intact, exp=intact["exp"] - 1)),
+                       ("malformed", dict(intact, authenticatorData=canon.b64u_encode(b"\x00" * 36))),
+                       ("malformed", dict(intact, extra=1))]
+            self.assertTrue(self.verify(intact, counter=stored))
+            for i, (reason, bad) in enumerate(spoiled):
+                with self.subTest(count=count, case=i, spoiled=reason):
+                    spend = Spender()
+                    if reason == "malformed":
+                        with self.assertRaises(canon.Malformed):
+                            self.verify(bad, counter=stored, spend=spend)
+                    else:
+                        self.refused(reason, bad, counter=stored, spend=spend)
+                    self.assertEqual(spend.spent, {intact["nonce"]})
+                    self.refused("used-nonce", intact, counter=stored, spend=spend)
+                    self.assertEqual(spend.calls, 2)
+
+    def test_a_forgery_keeps_its_reason_when_the_nonce_is_spent(self):
+        """`used-nonce` is decided only after the signature and freshness: a forgery carrying a spent nonce is still a
+        counted `signature` refusal, never laundered into a not-counted one."""
+        r = self.refused("signature", self.forge(bad_sig=True), spend=Spender({self.fx["record"]["nonce"]}))
+        self.assertEqual(r.cls, "counted")
         self.assertEqual(self.spender.calls, 1)
+
+    def test_an_error_from_spend_is_raised_and_spend_runs_once(self):
+        """A spend that fails (a full disk) makes verify fail with that error, accepted record or refused one, and is
+        never tried a second time."""
+        class Failing(Spender):
+            def __call__(self, nonce):
+                self.calls += 1
+                raise OSError("no space left")
+        for label, rec, kw in (("accepted", self.forge(), {}), ("signature", self.forge(bad_sig=True), {}),
+                               ("counter", self.forge(count=7), {"counter": 7})):
+            with self.subTest(label):
+                with self.assertRaises(OSError):
+                    self.verify(rec, spend=Failing(), **kw)
+                self.assertEqual(self.spender.calls, 1)
 
     def test_used_nonce_comes_before_counter_and_list(self):
         """A spent nonce wins over a counter that did not go up, a BE flag that changed and a list that changed."""
@@ -484,9 +564,9 @@ class TestVerifySig(unittest.TestCase):
                 self.assertFalse(webauthn.verify_sig(alg, UNKNOWN_OID_SPKI, b"a" * 37, b"{}", b"\x30\x00"))
 
     def test_key_fits(self):
-        """ES256 needs a P-256 key; RS256 an RSA key of at least 2048 bits with an odd exponent of at least 3.
-        cryptography 50 already refuses an exponent of 1 or an even one at load; webauthn checks it again so an older
-        or laxer build cannot let one through. This test checks the answer, whichever layer gives it."""
+        """ES256 needs a P-256 key; RS256 an RSA key with an odd modulus of 2048 to 4096 bits and an odd exponent from 3
+        to 2^32 - 1. cryptography 50 already refuses an exponent of 1 or an even one at load; webauthn checks it again so
+        an older or laxer build cannot let one through. This test checks the answer, whichever layer gives it."""
         need("cryptography")
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric import ec, rsa
@@ -507,6 +587,14 @@ class TestVerifySig(unittest.TestCase):
         for e in (1, 2, 65536):
             with self.subTest(e=e):
                 self.assertFalse(webauthn.key_fits(-257, _rsa_spki(n, e)))
+        # re-check R4: keys cryptography loads but OpenSSL can never verify with, and the bounds themselves
+        self.assertTrue(webauthn.key_fits(-257, _rsa_spki(n, 2 ** 32 - 1)))
+        self.assertTrue(webauthn.key_fits(-257, _rsa_spki((1 << 4095) + 1, 65537)))     # 4096 bits
+        for label, bad_n, e in (("even modulus", n - 1, 65537), ("4097 bits", (1 << 4096) + 1, 65537),
+                                ("16401 bits", (1 << 16400) + 1, 65537), ("e = 2^32 + 1", n, 2 ** 32 + 1),
+                                ("e over 64 bits", n, 2 ** 65 + 1), ("e above n", n, n + 2)):
+            with self.subTest(label):
+                self.assertFalse(webauthn.key_fits(-257, _rsa_spki(bad_n, e)))
         small = rsa.generate_private_key(public_exponent=65537, key_size=1024).public_key()
         self.assertFalse(webauthn.key_fits(-257, spki(small)))
         self.assertFalse(webauthn.key_fits(-7, b""))
