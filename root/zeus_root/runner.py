@@ -21,9 +21,11 @@ it sees a flood (the start that next holds lib/lock applies the flood rule; unti
 each try waiting for the lock), and otherwise answers every entry it takes `busy`, within the same hourly cap. Before
 that it checks each record up to and including its signature (plan v6, Dax 2026-11-12) and
 spends the nonce with the signed exp when the signature checked out, else with none: a record root refused busy can
-never run later when sent again as it was. It writes its lines under state.write_lock only, and touches no other
-state. zeus-root-run.service is a oneshot, so two run starts never overlap; a busy start overlaps only reach-tick,
-boot or a command, which never take entries into work/ while a run start handles its own.
+never run later when sent again as it was. It writes its lines under state.write_lock only, and touches no state but
+the nonces, the hourly cap and quarantine. zeus-root-run.service is a oneshot, so two run starts never overlap; a
+busy start overlaps only reach-tick, boot or a command. Boot quarantines whatever it finds in work/, so a boot that
+takes lib/lock while a busy start still answers its own entries can quarantine one of them too (re-check note 5,
+for Z3): never a run, at worst two answers for one entry and a busy start that fails.
 
 Every refusal is one run-log line with its reason and class (contract §8e) and, when its record names a run, a
 `refused` result written after its nonce was spent. A spend that fails (state.NonceBusy, state.Broken, any OSError)
