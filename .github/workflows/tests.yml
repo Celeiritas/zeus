@@ -13,7 +13,18 @@ jobs:
       - uses: actions/checkout@v5
       - name: Build and run the zipapp
         run: bash scripts/build.sh && ./dist/zeus --version
+      - name: cryptography for the zeus-root tests (root/)
+        # The runner's own python3 in a venv, cryptography from PyPI: PEP 668 refuses `pip --user` here, and the Ubuntu
+        # mirrors were unreachable for hours on 2026-11-11 (argus-ui #49). On the server root uses the distro package.
+        run: |
+          python3 -m venv "$RUNNER_TEMP/rootpy"
+          "$RUNNER_TEMP/rootpy/bin/pip" install cryptography
+          "$RUNNER_TEMP/rootpy/bin/python" -c "import cryptography, sys; print(sys.version, cryptography.__version__)"
+          echo "PYTHON=$RUNNER_TEMP/rootpy/bin/python" >> "$GITHUB_ENV"
       - name: Tests
+        # A root test whose need (Linux, cryptography) is missing fails here instead of skipping (tests/root_support.py).
+        env:
+          ZEUS_ROOT_TESTS_REQUIRED: "1"
         run: bash tests/run.sh
   throne-page:
     # The Throne page in a real browser, under Elaia (argus-ui's test runner), against a fake zeus: tests/throne/.

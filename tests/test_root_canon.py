@@ -31,6 +31,13 @@ class StrictTest(unittest.TestCase):
             with self.subTest(raw=raw), self.assertRaises(Malformed):
                 canon.strict_loads(raw)
 
+    def test_strict_refuses_what_plain_json_accepts(self):
+        """json.loads alone takes a lone surrogate and turns 1e999 into infinity; too deep a nest is refused too."""
+        for raw in (b'{"a":"\\ud800"}', b'{"\\udc00":1}', b'{"a":1e999}', b'{"a":-1e999}', b'[' * 5000 + b']' * 5000,
+                    bytearray(b'{"a":1,"a":1}'), "{}"):
+            with self.subTest(raw=raw[:20]), self.assertRaises(Malformed):
+                canon.strict_loads(raw)
+
     def test_strict_accepts_plain_object(self):
         self.assertEqual(canon.strict_loads(b'{"a":[1,"x",null,true]}'), {"a": [1, "x", None, True]})
 
@@ -88,6 +95,31 @@ class ChallengeTest(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(Malformed):
                 canon.challenge(**dict(good, **change))
 
+    def test_params_belong_to_the_action(self):
+        """{} for a listed action, exactly {"key": <ref>} for check-key (contract §8b); nothing in between."""
+        good = dict(list_sha="0" * 64, nonce=NONCE, exp=5, origin=ORIGIN)
+        for action, params in (("check-key", {}), ("check-key", {"key": "0123456789ABCDEF"}),
+                               ("check-key", {"key": "0123456789abcde"}), ("check-key", {"key": "0" * 16, "x": 1}),
+                               ("close-media-lan", {"key": "0" * 16})):
+            with self.subTest(action=action, params=params), self.assertRaises(Malformed):
+                canon.challenge(action, params, **good)
+
+    def test_origin_is_exact_https_with_port(self):
+        good = dict(action="close-media-lan", params={}, list_sha="0" * 64, nonce=NONCE, exp=5)
+        for origin in ("https://h.example", "http://h.example:4443", "https://H.example:4443", "https://h.example:0",
+                       "https://h.example:65536", "https://h.example:04443", "https://h.example:4443/",
+                       "https://h.example:4443\n", "https://-h.example:4443", "https://h..example:4443", None):
+            with self.subTest(origin=origin), self.assertRaises(Malformed):
+                canon.challenge(origin=origin, **good)
+        self.assertEqual(len(canon.challenge(origin="https://h.example:65535", **good)), 32)
+
+    def test_exp_bounds(self):
+        good = dict(action="close-media-lan", params={}, list_sha="0" * 64, nonce=NONCE, origin=ORIGIN)
+        for exp in (0, -1, 2 ** 53):
+            with self.subTest(exp=exp), self.assertRaises(Malformed):
+                canon.challenge(exp=exp, **good)
+        self.assertEqual(len(canon.challenge(exp=2 ** 53 - 1, **good)), 32)
+
     def test_valid_nonce(self):
         self.assertTrue(canon.valid_nonce(canon.b64u_encode(bytes(32))))
         self.assertFalse(canon.valid_nonce(canon.b64u_encode(bytes(31))))
@@ -105,6 +137,64 @@ class RefTest(unittest.TestCase):
         self.assertEqual(a, "r" + hashlib.sha256(b"zeus-root/run\n" + NONCE.encode()).hexdigest()[:20])
         self.assertEqual(a, canon.run_id(NONCE))
         self.assertNotEqual(a, canon.run_id("B" * 43))
+
+    def test_refs_refuse_the_wrong_input(self):
+        """A key ref over the base64url text instead of the raw bytes would be a different, wrong ref."""
+        with self.assertRaises(TypeError):
+            canon.key_ref(canon.b64u_encode(b"\x01\x02"))
+        for nonce in ("A" * 42, "A" * 43 + "\n", None):
+            with self.subTest(nonce=nonce), self.assertRaises(Malformed):
+                canon.run_id(nonce)
+
+
+class CtxTest(unittest.TestCase):
+    def test_iso_seconds_with_offset(self):
+        import tempfile
+        from zeus_root.ctx import iso
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = root_support.make_ctx(tmp)
+            self.assertEqual(iso(ctx, 1794000000.9), "2026-11-06T21:20:00+00:00")
+            self.assertTrue((ctx.run / "inbox").is_dir())
+
+    def test_system_uses_constants_only(self):
+        """Ctx.system() takes no path or id from the environment, and refuses a missing or root gate account."""
+        root_support.need("linux")
+        import grp
+        import pwd
+        from unittest import mock
+        from zeus_root.ctx import Ctx, run_command
+        junk = {k: "/tmp/elsewhere" for k in ("HOME", "ZEUS_DATA", "ZEUS_ROOT_ETC", "XDG_RUNTIME_DIR", "PYTHONPATH")}
+        user = mock.Mock(pw_uid=990)
+        group = mock.Mock(gr_gid=991)
+        with mock.patch.dict("os.environ", junk), mock.patch.object(pwd, "getpwnam", return_value=user), \
+                mock.patch.object(grp, "getgrnam", return_value=group):
+            ctx = Ctx.system()
+        self.assertEqual([str(p) for p in (ctx.etc, ctx.run, ctx.lib, ctx.log, ctx.libexec, ctx.proc)],
+                         ["/etc/zeus-root", "/run/zeus-root", "/var/lib/zeus-root", "/var/log/zeus-root",
+                          "/usr/local/libexec/zeus-root", "/proc"])
+        self.assertEqual((ctx.root_uid, ctx.gate_uid, ctx.gate_gid), (0, 990, 991))
+        self.assertIs(ctx.cmd, run_command)
+        self.assertEqual((ctx.script_limit_s, ctx.undo_limit_s, ctx.lock_wait_s), (120, 120, 30))
+        with mock.patch.object(pwd, "getpwnam", side_effect=KeyError("zeus-root-gate")), \
+                self.assertRaisesRegex(RuntimeError, "not installed"):
+            Ctx.system()
+        with mock.patch.object(pwd, "getpwnam", return_value=mock.Mock(pw_uid=0)), \
+                mock.patch.object(grp, "getgrnam", return_value=group), self.assertRaisesRegex(RuntimeError, "root"):
+            Ctx.system()
+
+    def test_run_command_fixed_environment(self):
+        root_support.need("linux")
+        from unittest import mock
+        from zeus_root.ctx import run_command
+        with mock.patch.dict("os.environ", {"LD_PRELOAD": "/tmp/x.so", "PATH": "/tmp/bin:/usr/bin"}):
+            r = run_command(["/usr/bin/env"], 10)
+        self.assertEqual((r.code, r.out), (0, "PATH=/usr/sbin:/usr/bin\n"))
+        self.assertEqual(run_command(["/usr/bin/pwd"], 10).out, "/\n")
+        self.assertEqual(run_command(["/usr/bin/sleep", "5"], 0.2).code, 124)
+        self.assertEqual(run_command(["/usr/bin/no-such-program-zeus-root"], 5).code, 127)
+        for argv in (["env"], [], ["/usr/bin/env", 1]):
+            with self.subTest(argv=argv), self.assertRaises(ValueError):
+                run_command(argv, 5)
 
 
 if __name__ == "__main__":
