@@ -73,10 +73,46 @@ class NonceTest(StateCase):
         state.prune_nonces(self.ctx)
         self.assertFalse(state.spend_nonce(self.ctx, NONCE))
 
+    def test_a_later_signed_exp_keeps_a_spent_nonce_longer(self):
+        """Re-check of de22580, finding 1: a nonce spent before any signature checked out (exp None, a spoiled copy)
+        is kept until a day after a signed exp that comes later (the intact record refused for its far exp), so the
+        intact record cannot run when that exp comes near."""
+        self.assertTrue(state.spend_nonce(self.ctx, NONCE))
+        exp = int(self.t0) + 2 * 86400
+        self.at(3600)
+        self.assertFalse(state.spend_nonce(self.ctx, NONCE, exp))
+        self.at(2 * 86400 + 86400)
+        state.prune_nonces(self.ctx)
+        self.assertFalse(state.spend_nonce(self.ctx, NONCE))
+        self.at(2 * 86400 + 86401)
+        state.prune_nonces(self.ctx)
+        self.assertTrue(state.spend_nonce(self.ctx, NONCE))
+
+    def test_only_a_later_signed_exp_moves_a_spent_nonce(self):
+        """A spent nonce's time never moves back, and nothing but an int exp later than its time moves it forward: a
+        resend without a signed exp cannot keep a nonce alive, and an earlier exp cannot shorten its keep."""
+        path = self.ctx.lib / "nonces" / hashlib.sha256(NONCE.encode()).hexdigest()[:32]
+        far = int(self.t0) + 9 * 86400
+        for first, kept in ((None, self.t0), (far, far)):
+            with self.subTest(first=first):
+                for f in (self.ctx.lib / "nonces").iterdir():
+                    f.unlink()
+                self.at(0)
+                state.spend_nonce(self.ctx, NONCE, first)
+                self.at(3600)
+                for exp in (None, True, int(self.t0) - 600, int(self.t0) + 3000, float(far + 86400),
+                            str(far + 86400)):
+                    self.assertFalse(state.spend_nonce(self.ctx, NONCE, exp))
+                    self.assertEqual(os.stat(path).st_mtime, kept, exp)
+                if first is not None:
+                    self.assertFalse(state.spend_nonce(self.ctx, NONCE, far - 86400))
+                    self.assertEqual(os.stat(path).st_mtime, far)
+
     def test_file_time_is_set_before_its_fsync(self):
         """Re-check of f4e8ad8, note C: the nonce file gets its time on the open file before the file's fsync, so a
-        crash cannot leave it with only its creation time (kept a day instead of until its exp). Linux only: Windows
-        has no utime on a file descriptor, so there the time is set by name after the close."""
+        crash cannot leave it with only its creation time (kept a day instead of until its exp), also when a later
+        signed exp moves it. Linux only: Windows has no utime on a file descriptor, so there the time is set by name
+        after the close."""
         root_support.need("linux")
         import stat
         from unittest import mock
@@ -90,7 +126,9 @@ class NonceTest(StateCase):
         exp = int(self.t0) + 3 * 86400     # an int, as a signed exp is: a float exp counts as none
         with mock.patch.object(state.os, "fsync", fsync):
             self.assertTrue(state.spend_nonce(self.ctx, NONCE, exp))
-        self.assertEqual(seen, [exp])
+            self.at(3600)
+            self.assertFalse(state.spend_nonce(self.ctx, NONCE, exp + 86400))
+        self.assertEqual(seen, [exp, exp + 86400])
 
     def test_bad_nonce_refused(self):
         for nonce in ("A" * 42, "../" + "A" * 40, None, "A" * 42 + "B"):

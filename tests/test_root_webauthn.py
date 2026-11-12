@@ -455,6 +455,31 @@ class TestRefusals(Base):
                 state.prune_nonces(ctx)
                 self.assertTrue(self.verify(intact, now=ctx.now.t, spend=spend))
 
+    def test_far_exp_seen_spoiled_then_intact_while_kept_is_used_near_its_exp(self):
+        """Re-check of de22580, finding 1: after a spoiled first copy, the intact record shown while root still keeps
+        the nonce is refused (`expired`, its exp two days away) after its signature checked out, and that signed exp
+        now keeps the nonce: sent again as it was 60 s before its exp, it is `used-nonce` and does not run."""
+        import tempfile
+        from tests import root_support
+        from zeus_root import state
+        exp = self.fx["record"]["exp"]
+        then = exp - 2 * 86400
+        intact = self.forge()
+        for reason, bad in (("wrong-device", self.forge(seen={"node_id": "nOTHERDEVICE"})),
+                            ("challenge", self.forge(exp=then + 100))):
+            with self.subTest(refused=reason), tempfile.TemporaryDirectory() as tmp:
+                ctx = root_support.make_ctx(tmp)
+
+                def spend(nonce, e):
+                    return state.spend_nonce(ctx, nonce, e)
+                ctx.now.t = then
+                self.refused(reason, bad, now=then, spend=spend)
+                ctx.now.t = then + 3600
+                self.refused("expired", intact, now=ctx.now.t, spend=spend)
+                ctx.now.t = exp - 60
+                state.prune_nonces(ctx)
+                self.refused("used-nonce", intact, now=ctx.now.t, spend=spend)
+
     def test_a_forgery_keeps_its_reason_when_the_nonce_is_spent(self):
         """`used-nonce` is decided only after the signature and freshness: a forgery carrying a spent nonce is still a
         counted `signature` refusal, never laundered into a not-counted one."""

@@ -113,23 +113,10 @@ def _nonce_path(ctx, nonce):
     return ctx.lib / "nonces" / hashlib.sha256(nonce.encode("ascii")).hexdigest()[:32]
 
 
-def spend_nonce(ctx, nonce, exp=None):
-    """Mark a nonce used: True the first time, False until it is pruned. exp is the signed expiry of the nonce's record
-    (unix seconds), or None (anything but an int counts as None) when there is none or it was not checked: webauthn
-    passes it only once the signature checked out. The nonce is kept until a day after the later of the moment it was
-    spent and exp, so a genuine record refused because its exp was too far ahead cannot run once that exp comes near:
-    keeping it one day only let a lying gate hand the same signed record in again a day later (0.8.1 re-check,
-    finding 2)."""
-    path = _nonce_path(ctx, nonce)
-    try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW | _CLOEXEC, 0o600)
-    except FileExistsError:
-        return False
-    t = ctx.now()
-    if type(exp) is int and exp > t:
-        t = max(t, min(exp, NONCE_KEEP_LIMIT))
-    # the file's time is when it was spent by root's clock, or its record's exp if later. Set on the open file before
-    # its fsync, so a crash cannot leave the file with only its creation time (kept a day instead of until exp)
+def _stamp(path, fd, t):
+    """Give the open nonce file the time t, flush it and close it. The time is set on the open file before its fsync,
+    so a crash cannot leave the file with an older time (re-check of f4e8ad8, note C); Windows (tests only) has no
+    utime on a file descriptor and sets it by name after the close."""
     on_fd = os.utime in os.supports_fd
     try:
         if on_fd:
@@ -138,16 +125,53 @@ def spend_nonce(ctx, nonce, exp=None):
     finally:
         os.close(fd)
     if not on_fd:
-        os.utime(path, (t, t))     # Windows (tests only): no utime on a file descriptor
+        os.utime(path, (t, t))
+
+
+def spend_nonce(ctx, nonce, exp=None):
+    """Mark a nonce used: True the first time, False until it is pruned. exp is the signed expiry of the nonce's record
+    (unix seconds), or None (anything but an int counts as None) when there is none or it was not checked: webauthn
+    passes it only once the signature checked out. The nonce is kept until a day after the later of the moment it was
+    spent and exp, so a genuine record refused because its exp was too far ahead cannot run once that exp comes near:
+    keeping it one day only let a lying gate hand the same signed record in again a day later (0.8.1 re-check,
+    finding 2). A nonce already spent is kept longer, never shorter, when a later call brings a signed exp past its
+    file's time: a copy refused before its signature keeps it one day, and the intact record whose signature then
+    checks out must still keep it until a day after that exp (re-check of de22580, finding 1)."""
+    path = _nonce_path(ctx, nonce)
+    now = ctx.now()
+    signed_later = type(exp) is int and exp > now
+    keep = max(now, min(exp, NONCE_KEEP_LIMIT)) if signed_later else now
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW | _CLOEXEC, 0o600)
+    except FileExistsError:
+        if signed_later:
+            _keep_until(path, keep)
+        return False
+    _stamp(path, fd, keep)
     _fsync_dir(path.parent)
     return True
 
 
+def _keep_until(path, t):
+    """Move a spent nonce's file time forward to t, never back."""
+    fd = os.open(path, os.O_WRONLY | _NOFOLLOW | _CLOEXEC)
+    try:
+        later = os.fstat(fd).st_mtime < t
+    except BaseException:
+        os.close(fd)
+        raise
+    if later:
+        _stamp(path, fd, t)
+    else:
+        os.close(fd)
+
+
 def prune_nonces(ctx):
-    """Forget a nonce a day after its file's time (when it was spent, or its record's signed exp if later). By then the
-    record it was spent for expired a day ago, or (exp None) was refused before its signature checked out a day ago,
-    which outlasts any exp root accepts (180 s). A record with an exp more than a day ahead that root only ever saw
-    spoiled is the key page's to stop (contract §8b)."""
+    """Forget a nonce a day after its file's time (when it was spent, or the latest signed exp root saw for it if
+    later). By then the record it was spent for expired a day ago, or (no signed exp) root first refused a copy of it
+    before its signature more than a day ago, which covers any record whose exp is at most a day after that refusal. A
+    record with an exp more than a day ahead that root refused only before its signature while it kept the nonce is
+    the key page's to stop (contract §8b)."""
     cutoff = ctx.now() - DAY_S
     with os.scandir(ctx.lib / "nonces") as it:
         for e in it:
