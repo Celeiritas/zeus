@@ -179,7 +179,8 @@ def key_ref(cred_id):
 
 
 def run_id(nonce):
-    """D4: "r" + the first 20 hex of SHA-256(`zeus-root/run\\n` + nonce). The gate computes the same for `finish`."""
-    if not isinstance(nonce, str) or not NONCE_RE.fullmatch(nonce):
+    """D4: "r" + the first 20 hex of SHA-256(`zeus-root/run\\n` + nonce). The gate computes the same for `finish`.
+    A nonce valid_nonce refuses names no run (0.8.1 re-check, finding 4)."""
+    if not valid_nonce(nonce):
         raise Malformed("bad nonce")
     return "r" + hashlib.sha256(b"zeus-root/run\n" + nonce.encode("ascii")).hexdigest()[:20]

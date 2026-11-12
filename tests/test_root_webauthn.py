@@ -214,7 +214,7 @@ class TestVectors(unittest.TestCase):
                 with self.assertRaises(webauthn.Refusal) as caught:
                     webauthn.verify(rec, {key.ref: other}, _cfg(), rec["list"], rec["exp"] - 60, 1, spend)
                 self.assertEqual(caught.exception.reason, "signature")
-                self.assertEqual(spend.calls, 0)
+                self.assertEqual((spend.calls, spend.spent), (1, {rec["nonce"]}))
 
 
 class TestReplay(unittest.TestCase):
@@ -253,7 +253,27 @@ class TestReplay(unittest.TestCase):
                     spend = Spender(spent)
                     r = self.refusal(rec, keys, rec["exp"] + 2 * 86400, spend)
                     self.assertEqual((r.reason, r.cls, r.attention), ("expired", "not-counted", None))
-                    self.assertEqual(spend.calls, 0)
+                    self.assertEqual((spend.calls, spend.spent), (1, {rec["nonce"]}))
+
+    def test_refused_once_then_intact_is_used_nonce(self):
+        """Re-check R1 on the real records: the gate spoils an unsigned field or a byte of the signature, root refuses,
+        then the intact record comes inside its window. With a stored counter of 1 the intact record alone would run
+        (the control); after the refusal it is `used-nonce`."""
+        for name, rec, keys in self.each():
+            sig = canon.b64u_decode(rec["signature"])
+            self.assertTrue(self.w.verify(rec, keys, _cfg(), rec["list"], rec["exp"] - 60, 1, Spender()))
+            for reason, bad in (("wrong-device", dict(rec, seen=dict(rec["seen"], node_id="nOTHERDEVICE"))),
+                                ("wrong-user", dict(rec, userHandle=None)),
+                                ("signature", dict(rec, signature=canon.b64u_encode(sig[:-1] + bytes([sig[-1] ^ 1]))))):
+                with self.subTest(name, spoiled=reason):
+                    spend = Spender()
+                    with self.assertRaises(self.w.Refusal) as caught:
+                        self.w.verify(bad, keys, _cfg(), rec["list"], rec["exp"] - 60, 1, spend)
+                    self.assertEqual(caught.exception.reason, reason)
+                    with self.assertRaises(self.w.Refusal) as caught:
+                        self.w.verify(rec, keys, _cfg(), rec["list"], rec["exp"] - 60, 1, spend)
+                    self.assertEqual(caught.exception.reason, "used-nonce")
+                    self.assertEqual(spend.calls, 2)
 
     def test_same_counter_fresh_and_unspent_is_counter(self):
         """The one case that still says "copied": a genuine signature, fresh, a nonce never seen, and a counter that
@@ -273,31 +293,244 @@ class TestRefusals(Base):
         self.assertEqual(got.auth.count, 7)
         self.assertEqual((self.spender.calls, self.spender.spent), (1, {self.fx["record"]["nonce"]}))
 
-    def test_spend_only_after_signature_and_freshness(self):
-        """spend is not called for a record refused before or at freshness, and called exactly once for every record
-        that got past it, whatever comes after (counter, BE flag, list, or accepted)."""
+    def test_spend_once_for_every_answer(self):
+        """Re-check R1: spend is called exactly once for every record whose nonce has the right shape, whatever the
+        answer (each refusal, malformed, accepted), and never for a record whose nonce has the wrong shape."""
+        nonce = self.fx["record"]["nonce"]
         exp = self.fx["record"]["exp"]
-        before = [("unknown-key", self.forge(), {"keys": {}}),
-                  ("wrong-device", self.forge(seen={"node_id": "nOTHERDEVICE"}), {}),
-                  ("origin", self.forge(client={"origin": "https://h.example:4444"}), {}),
-                  ("uv", self.forge(flags=FLAGS_OK & ~0x04), {}),
-                  ("signature", self.forge(bad_sig=True), {}),
-                  ("expired", self.forge(), {"now": exp}),
-                  ("expired", self.forge(), {"now": exp - 181})]
-        for reason, rec, kw in before:
+        refusals = [("unknown-key", self.forge(), {"keys": {}}),
+                    ("wrong-device", self.forge(seen={"node_id": "nOTHERDEVICE"}), {}),
+                    ("origin", self.forge(client={"origin": "https://h.example:4444"}), {}),
+                    ("uv", self.forge(flags=FLAGS_OK & ~0x04), {}),
+                    ("signature", self.forge(bad_sig=True), {}),
+                    ("expired", self.forge(), {"now": exp}),
+                    ("expired", self.forge(), {"now": exp - 181}),
+                    ("counter", self.forge(count=7), {"counter": 7}),
+                    ("be-changed", self.forge(flags=FLAGS_OK & ~0x18), {}),
+                    ("list-changed", self.forge(), {"list_sha": "0" * 64}),
+                    ("used-nonce", self.forge(), {"spend": Spender({nonce})})]
+        for reason, rec, kw in refusals:
             with self.subTest(reason=reason, **{k: v for k, v in kw.items() if k == "now"}):
                 self.refused(reason, rec, **kw)
-                self.assertEqual(self.spender.calls, 0)
-        after = [("counter", self.forge(count=7), {"counter": 7}),
-                 ("be-changed", self.forge(flags=FLAGS_OK & ~0x18), {}),
-                 ("list-changed", self.forge(), {"list_sha": "0" * 64}),
-                 ("used-nonce", self.forge(), {"spend": Spender({self.fx["record"]["nonce"]})})]
-        for reason, rec, kw in after:
-            with self.subTest(reason=reason):
-                self.refused(reason, rec, **kw)
-                self.assertEqual(self.spender.calls, 1)
+                self.assertEqual((self.spender.calls, self.spender.spent), (1, {nonce}))
+        for change in ({"extra": 1}, {"exp": True}, {"credentialId": "not base64url!"},
+                       {"authenticatorData": canon.b64u_encode(b"\x00" * 36)}):
+            with self.subTest(malformed=sorted(change)):
+                with self.assertRaises(canon.Malformed):
+                    self.verify(dict(self.forge(), **change))
+                self.assertEqual((self.spender.calls, self.spender.spent), (1, {nonce}))
         self.verify(self.forge())
+        self.assertEqual((self.spender.calls, self.spender.spent), (1, {nonce}))
+        for bad in ("short", None, 7, "A" * 42 + "B", "A" * 44):
+            with self.subTest(nonce=bad):
+                with self.assertRaises(canon.Malformed):
+                    self.verify(dict(self.forge(), nonce=bad))
+                self.assertEqual(self.spender.calls, 0)
+        with self.assertRaises(canon.Malformed):
+            self.verify(["not", "a", "record"])
+        self.assertEqual(self.spender.calls, 0)
+
+    def test_refused_then_sent_again_intact_is_used_nonce(self):
+        """Re-check R1: the gate spoils one part of a genuine record A (an unsigned field, a byte of the signature, the
+        signed fields, the authenticator data, the shape), root refuses it, and the gate sends A again intact inside its
+        180 s. The refusal spent the nonce, so A is `used-nonce` (not counted, no buzz) and never runs, for a key that
+        keeps its counter at 0 and for one that counts. The control shows A alone would have run."""
+        for count, stored in ((0, None), (7, 5)):
+            intact = self.forge(count=count)
+            sig = canon.b64u_decode(intact["signature"])
+            spoiled = [("wrong-device", dict(intact, seen=dict(intact["seen"], node_id="nOTHERDEVICE"))),
+                       ("wrong-user", dict(intact, userHandle=None)),
+                       ("unknown-key", dict(intact, credentialId=canon.b64u_encode(b"another key"))),
+                       ("signature", dict(intact, signature=canon.b64u_encode(sig[:-1] + bytes([sig[-1] ^ 1])))),
+                       ("challenge", dict(intact, exp=intact["exp"] - 1)),
+                       ("malformed", dict(intact, authenticatorData=canon.b64u_encode(b"\x00" * 36))),
+                       ("malformed", dict(intact, extra=1))]
+            self.assertTrue(self.verify(intact, counter=stored))
+            for i, (reason, bad) in enumerate(spoiled):
+                with self.subTest(count=count, case=i, spoiled=reason):
+                    spend = Spender()
+                    if reason == "malformed":
+                        with self.assertRaises(canon.Malformed):
+                            self.verify(bad, counter=stored, spend=spend)
+                    else:
+                        self.refused(reason, bad, counter=stored, spend=spend)
+                    self.assertEqual(spend.spent, {intact["nonce"]})
+                    self.refused("used-nonce", intact, counter=stored, spend=spend)
+                    self.assertEqual(spend.calls, 2)
+
+    def test_spend_gets_the_exp_only_once_signed(self):
+        """0.8.1 re-check finding 2, and finding B of the re-check of its fix: spend gets the record's exp once the
+        signature checked out (then it is the exp the phone signed), so a genuine record's nonce outlives it; None for a
+        record refused before that point (its exp is only the gate's word) and when the exp is not an int (malformed)."""
+        exp = self.fx["record"]["exp"]
+        self.verify(self.forge())
+        self.assertEqual(self.spender.exps, [exp])
+        self.refused("expired", self.forge(), now=exp - 2 * 86400)
+        self.assertEqual(self.spender.exps, [exp])
+        before = [("wrong-device", self.forge(seen={"node_id": "nOTHERDEVICE"})),
+                  ("unknown-key", dict(self.forge(), credentialId=canon.b64u_encode(b"another key"))),
+                  ("challenge", self.forge(exp=exp + 86400)),
+                  ("signature", self.forge(bad_sig=True))]
+        for reason, rec in before:
+            with self.subTest(refused=reason):
+                self.refused(reason, rec)
+                self.assertEqual(self.spender.exps, [None])
+        for bad in (True, 1.5, "1794000000"):
+            with self.subTest(exp=bad):
+                with self.assertRaises(canon.Malformed):
+                    self.verify(dict(self.forge(), exp=bad))
+                self.assertEqual(self.spender.exps, [None])
+
+    def test_far_exp_refused_then_near_its_exp_is_used_nonce(self):
+        """0.8.1 re-check finding 2, with root's own nonce store: a lying gate issues an exp two days away, the owner
+        taps, root refuses `expired` and the key page says "Nothing ran". A day of pruning later the gate hands in the
+        same intact record 60 s before its exp: it must be `used-nonce`, not run. A day after its exp it is forgotten."""
+        import tempfile
+        from tests import root_support
+        from zeus_root import state
+        exp = self.fx["record"]["exp"]
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = root_support.make_ctx(tmp)
+
+            def spend(nonce, e):
+                return state.spend_nonce(ctx, nonce, e)
+            ctx.now.t = exp - 2 * 86400
+            self.refused("expired", self.forge(), now=ctx.now.t, spend=spend)
+            ctx.now.t = exp - 60
+            state.prune_nonces(ctx)
+            self.refused("used-nonce", self.forge(), now=ctx.now.t, spend=spend)
+            ctx.now.t = exp + 86400 + 1
+            state.prune_nonces(ctx)
+            self.assertTrue(state.spend_nonce(ctx, self.fx["record"]["nonce"]))
+
+    def test_junk_with_a_far_exp_is_forgotten_after_a_day(self):
+        """Re-check of f4e8ad8, finding B: a record refused before its signature checked out keeps its nonce one day,
+        whatever exp it names. Kept until that exp, junk with exp 2^53 - 1 (an unknown key, or a real key with the
+        challenge for that exp and a bad signature) left a nonce file until 2106, and garbage never pauses or buzzes."""
+        import tempfile
+        from tests import root_support
+        from zeus_root import state
+        far = 2 ** 53 - 1
+        rec = self.fx["record"]
+        far_challenge = canon.challenge(rec["action"], rec["params"], rec["list"], rec["nonce"], far, self.cfg.origin)
+        junk = [("unknown-key", dict(self.forge(exp=far), credentialId=canon.b64u_encode(b"another key"))),
+                ("signature", self.forge(client={"challenge": canon.b64u_encode(far_challenge)}, exp=far,
+                                         bad_sig=True))]
+        for reason, bad in junk:
+            with self.subTest(refused=reason), tempfile.TemporaryDirectory() as tmp:
+                ctx = root_support.make_ctx(tmp)
+
+                def spend(nonce, e):
+                    return state.spend_nonce(ctx, nonce, e)
+                self.refused(reason, bad, now=ctx.now.t, spend=spend)
+                self.assertEqual(len(list((ctx.lib / "nonces").iterdir())), 1)
+                ctx.now.t += 86400 + 1
+                state.prune_nonces(ctx)
+                self.assertEqual(list((ctx.lib / "nonces").iterdir()), [])
+
+    def test_far_exp_seen_spoiled_first_is_left_to_the_key_page(self):
+        """Re-check of f4e8ad8, finding A, pinned so the limit stays in sight: root cannot learn the signed exp from a
+        copy it refuses before the signature. So a record whose exp is two days away, first sent spoiled (its exp moved
+        near or not), keeps its nonce one day, and the intact record sent 60 s before its exp verifies. Only the key
+        page's exp check stops this (contract §8b, Z4), and Z5 installs nothing before it. If root ever closes this
+        case, this test changes together with the contract."""
+        import tempfile
+        from tests import root_support
+        from zeus_root import state
+        exp = self.fx["record"]["exp"]
+        then = exp - 2 * 86400
+        intact = self.forge()
+        spoiled = [("wrong-device", self.forge(seen={"node_id": "nOTHERDEVICE"})),
+                   ("wrong-device", self.forge(seen={"node_id": "nOTHERDEVICE"}, exp=then + 100)),
+                   ("challenge", self.forge(exp=then + 100))]
+        for i, (reason, bad) in enumerate(spoiled):
+            with self.subTest(case=i, refused=reason), tempfile.TemporaryDirectory() as tmp:
+                ctx = root_support.make_ctx(tmp)
+
+                def spend(nonce, e):
+                    return state.spend_nonce(ctx, nonce, e)
+                ctx.now.t = then
+                self.refused(reason, bad, now=then, spend=spend)
+                ctx.now.t = exp - 60
+                state.prune_nonces(ctx)
+                self.assertTrue(self.verify(intact, now=ctx.now.t, spend=spend))
+
+    def test_far_exp_seen_spoiled_then_intact_while_kept_is_used_near_its_exp(self):
+        """Re-check of de22580, finding 1: after a spoiled first copy, the intact record shown while root still keeps
+        the nonce is refused (`expired`, its exp two days away) after its signature checked out, and that signed exp
+        now keeps the nonce: sent again as it was 60 s before its exp, it is `used-nonce` and does not run."""
+        import tempfile
+        from tests import root_support
+        from zeus_root import state
+        exp = self.fx["record"]["exp"]
+        then = exp - 2 * 86400
+        intact = self.forge()
+        for reason, bad in (("wrong-device", self.forge(seen={"node_id": "nOTHERDEVICE"})),
+                            ("challenge", self.forge(exp=then + 100))):
+            with self.subTest(refused=reason), tempfile.TemporaryDirectory() as tmp:
+                ctx = root_support.make_ctx(tmp)
+
+                def spend(nonce, e):
+                    return state.spend_nonce(ctx, nonce, e)
+                ctx.now.t = then
+                self.refused(reason, bad, now=then, spend=spend)
+                ctx.now.t = then + 3600
+                self.refused("expired", intact, now=ctx.now.t, spend=spend)
+                ctx.now.t = exp - 60
+                state.prune_nonces(ctx)
+                self.refused("used-nonce", intact, now=ctx.now.t, spend=spend)
+
+    def test_a_reused_nonce_refused_inside_its_180_s_keeps_the_intact_record_out(self):
+        """Re-check of 1f44350, N1, with root's own nonce store: a lying gate re-issues a nonce root spent almost a day
+        ago. A copy refused inside the new record's 180 s (spoiled before its signature, or busy at the lock: the
+        runner's own spend, no exp) keeps the nonce a day from that refusal, so after the next start's prune the
+        intact record is `used-nonce`, not run."""
+        import tempfile
+        from tests import root_support
+        from zeus_root import state
+        exp = self.fx["record"]["exp"]
+        nonce = self.fx["record"]["nonce"]
+        intact = self.forge()
+        for how in ("spoiled", "busy"):
+            with self.subTest(how), tempfile.TemporaryDirectory() as tmp:
+                ctx = root_support.make_ctx(tmp)
+
+                def spend(n, e):
+                    return state.spend_nonce(ctx, n, e)
+                ctx.now.t = exp - 170 - 86400 + 30      # an earlier record with this nonce spent it
+                self.assertTrue(state.spend_nonce(ctx, nonce))
+                ctx.now.t = exp - 170                    # a copy of the new record, refused inside its 180 s
+                state.prune_nonces(ctx)
+                if how == "spoiled":
+                    self.refused("wrong-device", self.forge(seen={"node_id": "nOTHERDEVICE"}), now=ctx.now.t,
+                                 spend=spend)
+                else:
+                    self.assertFalse(state.spend_nonce(ctx, nonce))
+                ctx.now.t = exp - 100                    # the next start prunes: the first spend is a day old now
+                state.prune_nonces(ctx)
+                ctx.now.t = exp - 90
+                self.refused("used-nonce", intact, now=ctx.now.t, spend=spend)
+
+    def test_a_forgery_keeps_its_reason_when_the_nonce_is_spent(self):
+        """`used-nonce` is decided only after the signature and freshness: a forgery carrying a spent nonce is still a
+        counted `signature` refusal, never laundered into a not-counted one."""
+        r = self.refused("signature", self.forge(bad_sig=True), spend=Spender({self.fx["record"]["nonce"]}))
+        self.assertEqual(r.cls, "counted")
         self.assertEqual(self.spender.calls, 1)
+
+    def test_an_error_from_spend_is_raised_and_spend_runs_once(self):
+        """A spend that fails (a full disk) makes verify fail with that error, accepted record or refused one, and is
+        never tried a second time."""
+        class Failing(Spender):
+            def __call__(self, nonce, exp):
+                self.calls += 1
+                raise OSError("no space left")
+        for label, rec, kw in (("accepted", self.forge(), {}), ("signature", self.forge(bad_sig=True), {}),
+                               ("counter", self.forge(count=7), {"counter": 7})):
+            with self.subTest(label):
+                with self.assertRaises(OSError):
+                    self.verify(rec, spend=Failing(), **kw)
+                self.assertEqual(self.spender.calls, 1)
 
     def test_used_nonce_comes_before_counter_and_list(self):
         """A spent nonce wins over a counter that did not go up, a BE flag that changed and a list that changed."""
@@ -484,9 +717,9 @@ class TestVerifySig(unittest.TestCase):
                 self.assertFalse(webauthn.verify_sig(alg, UNKNOWN_OID_SPKI, b"a" * 37, b"{}", b"\x30\x00"))
 
     def test_key_fits(self):
-        """ES256 needs a P-256 key; RS256 an RSA key of at least 2048 bits with an odd exponent of at least 3.
-        cryptography 50 already refuses an exponent of 1 or an even one at load; webauthn checks it again so an older
-        or laxer build cannot let one through. This test checks the answer, whichever layer gives it."""
+        """ES256 needs a P-256 key; RS256 an RSA key with an odd modulus of 2048 to 4096 bits and an odd exponent from 3
+        to 2^32 - 1. cryptography 50 already refuses an exponent of 1 or an even one at load; webauthn checks it again so
+        an older or laxer build cannot let one through. This test checks the answer, whichever layer gives it."""
         need("cryptography")
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric import ec, rsa
@@ -507,6 +740,14 @@ class TestVerifySig(unittest.TestCase):
         for e in (1, 2, 65536):
             with self.subTest(e=e):
                 self.assertFalse(webauthn.key_fits(-257, _rsa_spki(n, e)))
+        # re-check R4: keys cryptography loads but OpenSSL can never verify with, and the bounds themselves
+        self.assertTrue(webauthn.key_fits(-257, _rsa_spki(n, 2 ** 32 - 1)))
+        self.assertTrue(webauthn.key_fits(-257, _rsa_spki((1 << 4095) + 1, 65537)))     # 4096 bits
+        for label, bad_n, e in (("even modulus", n - 1, 65537), ("4097 bits", (1 << 4096) + 1, 65537),
+                                ("16401 bits", (1 << 16400) + 1, 65537), ("e = 2^32 + 1", n, 2 ** 32 + 1),
+                                ("e over 64 bits", n, 2 ** 65 + 1), ("e above n", n, n + 2)):
+            with self.subTest(label):
+                self.assertFalse(webauthn.key_fits(-257, _rsa_spki(bad_n, e)))
         small = rsa.generate_private_key(public_exponent=65537, key_size=1024).public_key()
         self.assertFalse(webauthn.key_fits(-257, spki(small)))
         self.assertFalse(webauthn.key_fits(-7, b""))

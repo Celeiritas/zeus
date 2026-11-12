@@ -144,13 +144,14 @@ def make_key(action="close-media-lan", **over):
 
 
 class Spender:
-    """verify()'s spend for tests: a set of spent nonces; .calls counts the calls."""
+    """verify()'s spend for tests: a set of spent nonces; .calls counts the calls, .exps lists the exp of each."""
 
     def __init__(self, spent=()):
-        self.spent, self.calls = set(spent), 0
+        self.spent, self.calls, self.exps = set(spent), 0, []
 
-    def __call__(self, nonce):
+    def __call__(self, nonce, exp):
         self.calls += 1
+        self.exps.append(exp)
         if nonce in self.spent:
             return False
         self.spent.add(nonce)

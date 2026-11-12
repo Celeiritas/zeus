@@ -1,5 +1,7 @@
 """zeus-root: canonical JSON, strict parsing, base64url, the challenge, key refs and run ids (docs/contract.md §8b)."""
 import hashlib
+import os
+import struct
 import unittest
 
 from tests import root_support  # noqa: F401  (puts root/ on sys.path)
@@ -8,6 +10,18 @@ from zeus_root.canon import Malformed
 
 NONCE = "A" * 43
 ORIGIN = "https://h.example:4443"
+
+
+def _tzif(version=b"2", footer=b"\nEST5EDT,M3.2.0,M11.1.0\n", utoff=-18000):
+    """A TZif zone file made by hand (RFC 8536): one zone type, EST at -05:00 (or utoff seconds), no transitions.
+    Version 2 and later repeat the block and end with a footer (a POSIX TZ string between newlines); version 1
+    (b"\\0") has neither."""
+    def block(v):
+        counts = struct.pack(">6l", 0, 0, 0, 0, 1, 4)    # isut, isstd, leap, time, type, char counts
+        return b"TZif" + v + b"\0" * 15 + counts + struct.pack(">lbB", utoff, 0, 0) + b"EST\0"
+    if version == b"\0":
+        return block(version)
+    return block(version) + block(version) + footer
 
 
 class CanonicalTest(unittest.TestCase):
@@ -144,13 +158,13 @@ class RefTest(unittest.TestCase):
         self.assertRegex(a, r"\Ar[0-9a-f]{20}\Z")
         self.assertEqual(a, "r" + hashlib.sha256(b"zeus-root/run\n" + NONCE.encode()).hexdigest()[:20])
         self.assertEqual(a, canon.run_id(NONCE))
-        self.assertNotEqual(a, canon.run_id("B" * 43))
+        self.assertNotEqual(a, canon.run_id("B" * 42 + "A"))
 
     def test_refs_refuse_the_wrong_input(self):
         """A key ref over the base64url text instead of the raw bytes would be a different, wrong ref."""
         with self.assertRaises(TypeError):
             canon.key_ref(canon.b64u_encode(b"\x01\x02"))
-        for nonce in ("A" * 42, "A" * 43 + "\n", None):
+        for nonce in ("A" * 42, "A" * 43 + "\n", None, "A" * 42 + "B", "B" * 43):
             with self.subTest(nonce=nonce), self.assertRaises(Malformed):
                 canon.run_id(nonce)
 
@@ -171,12 +185,19 @@ class CtxTest(unittest.TestCase):
         import pwd
         from unittest import mock
         from zeus_root.ctx import Ctx, run_command
+        from datetime import datetime, timedelta, timezone
+        from zeus_root.ctx import server_zone
         junk = {k: "/tmp/elsewhere" for k in ("HOME", "ZEUS_DATA", "ZEUS_ROOT_ETC", "XDG_RUNTIME_DIR", "PYTHONPATH")}
+        junk["TZ"] = "UTC-14"
         user = mock.Mock(pw_uid=990)
         group = mock.Mock(gr_gid=991)
         with mock.patch.dict("os.environ", junk), mock.patch.object(pwd, "getpwnam", return_value=user), \
                 mock.patch.object(grp, "getgrnam", return_value=group):
             ctx = Ctx.system()
+        # the zone comes from /etc/localtime, never from TZ (re-check R3)
+        moment = datetime(2026, 1, 15, 12, tzinfo=timezone.utc)
+        self.assertEqual(moment.astimezone(ctx.tz).utcoffset(), moment.astimezone(server_zone()).utcoffset())
+        self.assertNotEqual(moment.astimezone(ctx.tz).utcoffset(), timedelta(hours=14))
         self.assertEqual([str(p) for p in (ctx.etc, ctx.run, ctx.lib, ctx.log, ctx.libexec, ctx.proc)],
                          ["/etc/zeus-root", "/run/zeus-root", "/var/lib/zeus-root", "/var/log/zeus-root",
                           "/usr/local/libexec/zeus-root", "/proc"])
@@ -189,6 +210,118 @@ class CtxTest(unittest.TestCase):
         with mock.patch.object(pwd, "getpwnam", return_value=mock.Mock(pw_uid=0)), \
                 mock.patch.object(grp, "getgrnam", return_value=group), self.assertRaisesRegex(RuntimeError, "root"):
             Ctx.system()
+
+    def zone(self, data):
+        """server_zone() of a file holding data (None: no file), in a thread with a 10 s limit so that a loop fails
+        the test instead of hanging the run."""
+        import tempfile
+        import threading
+        from zeus_root.ctx import server_zone
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "localtime")
+            if data is not None:
+                with open(path, "wb") as f:
+                    f.write(data)
+            got = []
+            t = threading.Thread(target=lambda: got.append(server_zone(path)), daemon=True)
+            t.start()
+            t.join(10)
+            self.assertFalse(t.is_alive(), "server_zone hung")
+        self.assertEqual(len(got), 1)
+        return got[0]
+
+    def test_server_zone_reads_the_file_not_tz(self):
+        """A real zone file gives its offsets, summer time included, whatever TZ says (TZ=UTC-14 means +14:00)."""
+        from datetime import timedelta
+        from unittest import mock
+        from zeus_root.ctx import iso
+        with mock.patch.dict("os.environ", {"TZ": "UTC-14"}):
+            z = self.zone(_tzif())
+        ctx = mock.Mock(tz=z)
+        self.assertEqual(iso(ctx, 1794000000), "2026-11-06T16:20:00-05:00")
+        self.assertEqual(iso(ctx, 1782000000), "2026-06-20T20:00:00-04:00")
+        self.assertEqual(self.zone(_tzif(version=b"\0")).utcoffset(None), timedelta(hours=-5))
+
+    def test_server_zone_damaged_files_give_utc(self):
+        """Re-check R2: a version 2 file whose footer has no closing newline made CPython's zoneinfo loop for ever, and
+        some cut files raised struct.error or AssertionError. Every one of these gives UTC, quickly."""
+        from datetime import timezone
+        good = _tzif()
+        cases = {"missing": None, "empty": b"", "bad magic": b"XXXX" + good[4:], "cut at 30": good[:30],
+                 "cut at 50": good[:50], "cut in the second block": good[:70],
+                 "footer without its closing newline": good[:-1],
+                 "only the footer's opening newline": _tzif(footer=b"\n"),
+                 "no footer": _tzif(footer=b""),
+                 "negative counts": good[:20] + struct.pack(">6l", -1, -1, -1, -1, -1, -1) + good[44:],
+                 "over 64 KB": good + b"\n" * (64 * 1024)}
+        for label, data in cases.items():
+            with self.subTest(label):
+                self.assertIs(self.zone(data), timezone.utc)
+        # the pure-Python reader takes a footer it cannot read as a zone of that name at offset 0: UTC time all the same
+        from unittest import mock
+        from zeus_root.ctx import iso
+        bad = self.zone(_tzif(footer=b"\n%%%garbage\n"))
+        for t, want in ((1794000000, "2026-11-06T21:20:00+00:00"), (1782000000, "2026-06-21T00:00:00+00:00")):
+            self.assertEqual(iso(mock.Mock(tz=bad), t), want)
+
+    def test_server_zone_offsets_of_a_day_or_more_give_utc(self):
+        """0.8.1 re-check finding 1b: RFC 8536 allows offsets up to 25:59:59, which datetime cannot hold; such a file
+        parsed fine and then every iso() raised ValueError."""
+        from datetime import timezone
+        for label, data in {"version 1, +25:00": _tzif(version=b"\0", utoff=90000),
+                            "version 1, +24:00": _tzif(version=b"\0", utoff=86400),
+                            "footer XXX-24:59": _tzif(footer=b"\nXXX-24:59\n"),
+                            "footer XXX-24": _tzif(footer=b"\nXXX-24\n")}.items():
+            with self.subTest(label):
+                self.assertIs(self.zone(data), timezone.utc)
+
+    def test_iso_gives_utc_for_a_moment_the_zone_cannot_give(self):
+        from datetime import timedelta, tzinfo
+        from unittest import mock
+        from zeus_root.ctx import iso
+
+        class DayAhead(tzinfo):
+            def utcoffset(self, dt):
+                return timedelta(hours=25)
+
+            def dst(self, dt):
+                return timedelta(0)
+        self.assertEqual(iso(mock.Mock(tz=DayAhead()), 1794000000.9), "2026-11-06T21:20:00+00:00")
+
+    def test_server_zone_uses_the_pure_python_reader(self):
+        """Re-check of f4e8ad8, note D: the zone comes from zoneinfo's pure-Python class, never the C one. Python 3.13
+        and 3.14 fixed the C reader's crash on an all-summer-time file, so there the child-Python test below would pass
+        with the C reader put back; this one does not."""
+        from zoneinfo import _zoneinfo
+        self.assertIs(type(self.zone(_tzif())), _zoneinfo.ZoneInfo)
+
+    def test_server_zone_all_summer_time_file_does_not_kill_python(self):
+        """0.8.1 re-check finding 1a: a well-formed file whose every zone type is marked summer time made CPython's C
+        zoneinfo read out of bounds and kill the process (exit 139), which no except can catch. It runs in a child
+        Python here, so a crash fails this test instead of the whole run; the answer must be a usable time."""
+        import subprocess
+        import sys
+        import tempfile
+        import zeus_root
+        trans = [1773000000, 1794000000]
+
+        def block(size):
+            fmt = ">%d%s" % (len(trans), "l" if size == 4 else "q")
+            counts = struct.pack(">6l", 2, 2, 0, len(trans), 2, 8)
+            return (b"TZif2" + b"\0" * 15 + counts + struct.pack(fmt, *trans) + bytes([1, 0])
+                    + struct.pack(">lbB", -18000, 1, 0) + struct.pack(">lbB", -14400, 1, 4) + b"EST\0EDT\0"
+                    + b"\0\0" + b"\0\0")
+        code = ("import sys; sys.path.insert(0, sys.argv[1]); from unittest import mock; "
+                "from zeus_root.ctx import iso, server_zone; print(iso(mock.Mock(tz=server_zone(sys.argv[2])), 1794000000))")
+        root = os.path.dirname(os.path.dirname(os.path.abspath(zeus_root.__file__)))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "localtime")
+            with open(path, "wb") as f:
+                f.write(block(4) + block(8) + b"\nEST5EDT,M3.2.0,M11.1.0\n")
+            p = subprocess.run([sys.executable, "-I", "-c", code, root, path], capture_output=True, text=True,
+                               timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr[-500:])
+        self.assertRegex(p.stdout.strip(), r"\A2026-11-06T\d\d:20:00[+-]\d\d:\d\d\Z")
 
     def test_run_command_fixed_environment(self):
         root_support.need("linux")
