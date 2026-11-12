@@ -87,7 +87,7 @@ class NonceTest(StateCase):
             if stat.S_ISREG(st.st_mode):
                 seen.append(st.st_mtime)
             real(fd)
-        exp = self.t0 + 3 * 86400
+        exp = int(self.t0) + 3 * 86400     # an int, as a signed exp is: a float exp counts as none
         with mock.patch.object(state.os, "fsync", fsync):
             self.assertTrue(state.spend_nonce(self.ctx, NONCE, exp))
         self.assertEqual(seen, [exp])
