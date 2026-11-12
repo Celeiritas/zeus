@@ -439,7 +439,7 @@ class RefusalTest(StateCase):
         self.assertEqual(state.count_refusal(self.ctx, "counted"), 1)
 
     def test_refusals_in_hour_only_reads(self):
-        """The runner's garbage cap reads the count without adding to it."""
+        """Reading the count adds nothing to it (the tests read what a start counted)."""
         self.assertEqual(state.refusals_in_hour(self.ctx, "garbage"), 0)
         state.count_refusal(self.ctx, "garbage")
         self.at(10)

@@ -2,13 +2,17 @@
 
 After a successful run of an entry that can cut the phone off, root writes lib/reach/<run>.json (root 600) with the
 deadline (now + 600 s) and starts zeus-root-reach@<run>.timer, a once-a-minute heartbeat; the deadline itself lives
-on disk. A check-in (a `reach` record from the approving login and device) keeps the change. Without one, at the
-deadline the paired undo runs by itself: at the tick, at the next runner start if a timer was lost, or at boot. A
-running game (when the undo has `game_check`) delays it by at most config's `reach_game_max_s`.
+on disk. A check-in (a `reach` record from the approving login and device, before the deadline) keeps the change.
+Without one, at the deadline the paired undo runs by itself: at the tick, at the next runner start if a timer was
+lost, or at boot. A running game (when the undo has `game_check`) delays it by at most config's `reach_game_max_s`;
+a check-in after the deadline keeps nothing, also during that delay or while root's own files are broken (review N1).
 
 One log line per try, written when it is final (D6): the run's line waits in its reach file (`pending`) and is
 written with `reach` = kept, undone or superseded; a put-back's undo writes its own line too. Callers hold
-state.lock(ctx): the runner for a whole start, tick and boot take it themselves. A waiting file stays in place while a
+state.lock(ctx): the runner for a whole start, tick and boot take it themselves (boot starts the timers first, without
+it). A wait that is kept or superseded says so in its reach file (`final`) before its line is written, so a crash
+before the move to reach/done/ neither loses the line nor lets a put-back follow it: whoever finds that file next
+finishes it (the line only if the log does not hold it yet; review S4). A waiting file stays in place while a
 put-back's undo runs, so a crash in the middle puts back again at the next tick (the pairs' undos are idempotent);
 it moves to reach/done/ once its lines are written.
 """
@@ -25,7 +29,9 @@ SYSTEMCTL = "/usr/bin/systemctl"
 TIMER = "zeus-root-reach@%s.timer"
 TIMER_TIMEOUT_S = 30
 DOC_SCHEMA = {"run": str, "action": str, "undo": str, "node_id": str, "login": str, "deadline": (int, float),
-              "remind_at": (int, float), "game_wait_start": (int, float, type(None)), "pending": dict}
+              "remind_at": (int, float), "game_wait_start": (int, float, type(None)), "pending": dict,
+              "final": (str, type(None))}
+FINALS = ("kept", "superseded")
 
 
 def _folder(ctx):
@@ -50,6 +56,8 @@ def _load(path):
         raise state.Broken(path.name + " does not read back") from None
     if path.name != doc["run"] + ".json":
         raise state.Broken(path.name + " names another run")
+    if doc["final"] is not None and doc["final"] not in FINALS:
+        raise state.Broken(path.name + " has an unknown final")
     return doc
 
 
@@ -91,7 +99,8 @@ def begin(ctx, run, entry, seen, pending_line):
     then ends at the next runner start or at boot."""
     now = ctx.now()
     doc = {"run": run, "action": entry.id, "undo": entry.undo, "node_id": seen["node_id"], "login": seen["login"],
-           "deadline": now + REACH_S, "remind_at": now + REMIND_S, "game_wait_start": None, "pending": pending_line}
+           "deadline": now + REACH_S, "remind_at": now + REMIND_S, "game_wait_start": None, "pending": pending_line,
+           "final": None}
     logs.assert_no_ids(doc)
     _save(ctx, doc)
     logs.write_result(ctx, run, action=entry.id, state="waiting", deadline=iso(ctx, doc["deadline"]),
@@ -101,18 +110,46 @@ def begin(ctx, run, entry, seen, pending_line):
                        "next start or restart unless your phone checks in" % entry.title, run)
 
 
-def check_in(ctx, rec):
-    """A check-in record (D3): True when its run waits and seen.node_id and seen.login are the approver's; the run's
-    line is written with reach `kept`, the result says done, the wait ends. False for anything else (the runner logs it
-    as garbage); the run still waits."""
+def _final_line_written(ctx, run):
+    """Whether the run log already holds the run's line with its reach outcome (a finish that crashed after it)."""
+    return any(obj is not None and obj.get("run") == run and "reach" in obj
+               for _, _, obj, _ in logs.iter_run_lines(ctx))
+
+
+def _finish(ctx, path, doc, final, loaded):
+    """End a wait that was kept or superseded: `final` in the reach file first (one atomic write), then the run's
+    line, the result, the move to reach/done/ and the timer's stop. A file that already says final keeps what it says
+    and is only finished: its line is written only when the log does not hold it yet (review S4)."""
+    if doc["final"] is None:
+        doc = dict(doc, final=final)
+        _save(ctx, doc)
+        written = False
+    else:
+        written = _final_line_written(ctx, doc["run"])
+    if not written:
+        logs.append_run(ctx, dict(doc["pending"], reach=doc["final"]))
+    if doc["final"] == "kept":
+        logs.write_result(ctx, doc["run"], state="done", deadline=None, remind_at=None)
+    else:
+        logs.write_result(ctx, doc["run"], state="superseded", deadline=None, remind_at=None,
+                          sentence="%s was followed by a newer run, so it is not put back."
+                          % _title(loaded, doc["action"]))
+    _close(ctx, path, doc)
+
+
+def check_in(ctx, rec, loaded=None):
+    """A check-in record (D3): True when its run waits, its deadline has not passed, and seen.node_id and seen.login
+    are the approver's; the run's line is written with reach `kept`, the result says done, the wait ends. False for
+    anything else (the runner logs it as garbage); the run still waits, and a late one is put back (review N1). A wait
+    a crash left half finished is finished as its file says."""
     path = _path(ctx, rec["run"])
     doc = _load(path)
     if doc is None or rec["seen"]["node_id"] != doc["node_id"] or rec["seen"]["login"] != doc["login"]:
         return False
-    _close(ctx, path, doc)
-    logs.append_run(ctx, dict(doc["pending"], reach="kept"))
-    logs.write_result(ctx, doc["run"], state="done", deadline=None, remind_at=None)
-    return True
+    if doc["final"] is None and ctx.now() >= doc["deadline"]:
+        return False
+    _finish(ctx, path, doc, "kept", loaded)
+    return doc["final"] in (None, "kept")
 
 
 def supersede(ctx, entry, loaded):
@@ -120,13 +157,8 @@ def supersede(ctx, entry, loaded):
     put-back never undoes a newer run and at most one check waits per pair."""
     names = {entry.id, entry.undo} - {None}
     for path, doc in waiting(ctx):
-        if doc["action"] not in names:
-            continue
-        _close(ctx, path, doc)
-        logs.append_run(ctx, dict(doc["pending"], reach="superseded"))
-        title = _title(loaded, doc["action"])
-        logs.write_result(ctx, doc["run"], state="superseded", deadline=None, remind_at=None,
-                          sentence="%s was followed by a newer run, so it is not put back." % title)
+        if doc["action"] in names:
+            _finish(ctx, path, doc, "superseded", loaded)
 
 
 def _title(loaded, action):
@@ -139,9 +171,12 @@ def _game_minutes(loaded):
 
 
 def _handle(ctx, path, doc, loaded, after_restart):
-    """One waiting check at this moment: nothing before the deadline; after it, put back, except while a game runs
-    (the undo has game_check) for at most reach_game_max_s from the first time one was seen running. True when a
-    put-back ran."""
+    """One waiting check at this moment: a file that says final is finished (never put back); otherwise nothing
+    before the deadline; after it, put back, except while a game runs (the undo has game_check) for at most
+    reach_game_max_s from the first time one was seen running. True when a put-back ran."""
+    if doc["final"] is not None:
+        _finish(ctx, path, doc, doc["final"], loaded)
+        return False
     now = ctx.now()
     if now < doc["deadline"]:
         return False
@@ -178,7 +213,7 @@ def put_back(ctx, path, doc, loaded, reason):
     if undo is not None:
         try:
             out = runner.run_entry(ctx, undo, urun, ctx.undo_limit_s, runner.log_path(ctx, urun))
-            ran = True
+            ran = out.started             # an undo that could not start did not run (review N7)
         except Refusal:
             pass
     ok = ran and out.exit == 0 and not out.timed_out
@@ -223,9 +258,10 @@ def _locked_or_none(ctx):
 
 
 def tick(ctx, run):
-    """zeus-root reach-tick <run>, once a minute from its timer. A run that no longer waits stops its timer. The lock
-    held elsewhere (a start, a command) means: nothing now, the next tick tries again. Root's own files broken: no
-    put-back runs (nothing runs, design §16.3); the next tick tries again. Returns the exit code."""
+    """zeus-root reach-tick <run>, once a minute from its timer. A run that no longer waits stops its timer; one whose
+    file says final is finished. The lock held elsewhere (a start, a command) means: nothing now, the next tick tries
+    again. Root's own files broken: no put-back runs (nothing runs, design §16.3); the next tick tries again. Returns
+    the exit code."""
     from . import runner
     path = _path(ctx, run)
     with _locked_or_none(ctx) as held:
@@ -235,36 +271,41 @@ def tick(ctx, run):
         if doc is None:
             _timer(ctx, "stop", run)
             return 0
-        if ctx.now() < doc["deadline"]:
+        if doc["final"] is None and ctx.now() < doc["deadline"]:
             return 0
-        try:
-            loaded = runner.load(ctx)
-        except runner.TreeProblem as e:
+        loaded, problem = runner.load_or_problem(ctx)
+        if doc["final"] is None and problem is not None:
             logs.attention(ctx, "file-rules", "Root's own files break the ownership or mode rules (%s); a put-back "
-                           "waits until they are fixed" % e, run)
+                           "waits until they are fixed" % problem, run)
             return 1
         _handle(ctx, path, doc, loaded, False)
     return 0
 
 
 def boot(ctx):
-    """zeus-root boot, once at every boot: leftovers in work/ to quarantine (their nonce spent); every wait whose
-    deadline passed is put back at once ("no check-in, after a restart": no check-in could be trusted across the
-    restart, and no game runs this early); the others get their timer started again. Returns the exit code."""
+    """zeus-root boot, once at every boot. First, without lib/lock, every wait gets its timer started again, so a
+    tick comes whatever this boot finds: root's own files broken or the lock held elsewhere (review S3; reading the
+    reach files needs no lock, their writes are atomic). Then, under lib/lock: leftovers in work/ to quarantine (their
+    nonce spent); every wait whose file says final is finished; every wait whose deadline passed is put back at once
+    ("no check-in, after a restart": no check-in could be trusted across the restart, and no game runs this early).
+    Root's own files broken: no put-back runs, the ticks put back once they are fixed. Returns the exit code: 1 when
+    the lock was held elsewhere or root's files are broken."""
     from . import runner
-    with state.lock(ctx):
-        runner.leftovers(ctx)
-        try:
-            loaded = runner.load(ctx)
-        except runner.TreeProblem as e:
+    loaded, problem = runner.load_or_problem(ctx)
+    for _, doc in waiting(ctx):
+        if doc["final"] is None and not _timer(ctx, "start", doc["run"]):
+            logs.attention(ctx, "watcher-failed", "The reach check's timer for %s did not start again after a "
+                           "restart; it is put back at the next start unless your phone checks in"
+                           % _title(loaded, doc["action"]), doc["run"])
+    with _locked_or_none(ctx) as held:
+        if not held:
+            return 1
+        runner.leftovers(ctx, loaded)
+        if problem is not None:
             logs.attention(ctx, "file-rules", "Root's own files break the ownership or mode rules (%s); nothing runs "
-                           "until they are fixed" % e, None)
+                           "until they are fixed" % problem, None)
             return 1
         for path, doc in waiting(ctx):
-            if ctx.now() >= doc["deadline"]:
+            if doc["final"] is not None or ctx.now() >= doc["deadline"]:
                 _handle(ctx, path, doc, loaded, True)
-            elif not _timer(ctx, "start", doc["run"]):
-                logs.attention(ctx, "watcher-failed", "The reach check's timer for %s did not start again after a "
-                               "restart; it is put back at the next start unless your phone checks in"
-                               % _title(loaded, doc["action"]), doc["run"])
     return 0

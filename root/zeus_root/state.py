@@ -1,11 +1,13 @@
 """Root's own state under ctx.lib (/var/lib/zeus-root): spent nonces, signature counters, the pause, refusal counts,
-attention windows (D8), per-action limits, and the lock every start takes.
+attention windows (D8), the hourly cap on inbox entries opened and the last flood seen, per-action limits, and the lock
+every start takes.
 
 Callers hold lock(ctx) around every read-modify-write here (the runner for a whole start, the command line for one
 change). The nonce store also has a short lock of its own, which every spend and every prune takes, so the one call
 without lock(ctx), the runner's spend for a record refused busy at it (Z2b), never interleaves with another. The
-readable files of logs.py (the run log's chain, the results, the attention lines and attention.json) have a third short
-lock, write_lock(ctx), so the busy start's lines never interleave with the lines of the start that holds lib/lock. Each state
+readable files of logs.py (the run log's chain, the results, the attention lines and attention.json) and the hourly
+cap (opened.json) have a third short lock, write_lock(ctx), so the busy start's lines and slots never interleave with
+those of the start that holds lib/lock. Each state
 file is written to a temporary name in its own folder, flushed and renamed into place, mode 600; a new nonce file is
 linked into place from its temporary name instead, so it never replaces one that is there. A state file that doesn't
 read back raises Broken, and the caller stops instead of guessing (fail closed). Times come from ctx.now(); only the
@@ -331,6 +333,34 @@ def refusals_in_hour(ctx, cls):
     return len([t for t in _times(ts, "refusals.json") if now - t < HOUR_S])
 
 
+# --- the hourly cap and the flood (review M1, N2) -----------------------------------------------------------------
+
+def open_slot(ctx, per_hour):
+    """Take one of the hour's per_hour slots for opening an inbox entry: True, and the slot is noted; False when the
+    last hour already holds per_hour (nothing noted). Under write_lock, so a start that found lib/lock busy shares the
+    count with the start that holds it. opened.json keeps at most per_hour times."""
+    if type(per_hour) is not int or per_hour < 1:
+        raise ValueError("per_hour is a whole number from 1")
+    with write_lock(ctx):
+        now = ctx.now()
+        recent = [t for t in _times((_read(ctx, "opened.json") or {}).get("times", []), "opened.json")
+                  if now - t < HOUR_S]
+        if len(recent) >= per_hour:
+            return False
+        _save(ctx, "opened.json", {"times": (recent + [now])[-per_hour:]})
+        return True
+
+
+def flood_seen(ctx):
+    """Note a flood now (the caller holds lib/lock); True when none was seen within the hour before, so this flood
+    writes its line: one line for a flood that lasts, whatever pause is on."""
+    now = ctx.now()
+    data = _read(ctx, "flood.json")
+    last = None if data is None else _number(data.get("last"), "flood.json")
+    _save(ctx, "flood.json", {"last": now})
+    return last is None or now - last >= HOUR_S
+
+
 # --- attention windows (D8) ----------------------------------------------------------------------------------------
 
 def attention_slot(ctx, kind):
@@ -420,10 +450,11 @@ def lock(ctx):
 
 @contextlib.contextmanager
 def write_lock(ctx):
-    """Hold lib/write-lock (flock) for one write of logs.py: an append to the run log (its chain reads the last line),
-    one result file, one attention line with its window. A few file operations, never a whole start, so the runner's
-    start that found lib/lock busy (Z2b) writes its lines under it while another start holds lib/lock. Taken after
-    lib/lock, never before it, and never while the nonce lock is held. Windows (tests only): holds nothing."""
+    """Hold lib/write-lock (flock) for one write of logs.py (an append to the run log, whose chain reads the last
+    line; one result file; one attention line with its window) or one slot of the hourly cap (open_slot). A few file
+    operations, never a whole start, so the runner's start that found lib/lock busy (Z2b) writes its lines and takes
+    its slots under it while another start holds lib/lock. Taken after lib/lock, never before it, and never while the
+    nonce lock is held. Windows (tests only): holds nothing."""
     if os.name != "posix":
         yield
         return

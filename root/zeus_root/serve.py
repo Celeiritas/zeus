@@ -6,15 +6,24 @@ tailscaled may not let another account fetch the server's certificate (`TS_PERMI
 look-alike page on the key page's exact origin. Each is a look at one moment: it catches a mapping that is still
 changed when the run starts, not one that was changed and put back in between (private design 12.3a).
 
+TS_PERMIT_CERT_UID is read from tailscaled's environment as it runs (/proc/<MainPID>/environ), which holds what both
+`Environment=` and `EnvironmentFile=` set: Tailscale's own unit reads /etc/default/tailscaled, the documented place for
+it (review S2). Serve status keys other than the ones below, and any foreground session or service, are refused.
+
 The JSON shapes are those of Tailscale's `ipn.ServeConfig` (`TCP`, `Web`, `AllowFunnel`) and of `tailscale debug
 prefs` (`OperatorUser`), written from memory; the install's self-test (Z5) confirms them on {{SERVER}}. Anything that
 does not read as expected is a refusal (fail closed).
 """
+import re
+
 from . import canon
 
 TAILSCALE = "/usr/bin/tailscale"
 SYSTEMCTL = "/usr/bin/systemctl"
 TIMEOUT_S = 15
+MAIN_PID = [SYSTEMCTL, "show", "tailscaled.service", "-p", "MainPID", "--value"]
+ENVIRON_MAX = 1 << 20
+STATUS_KEYS = {"TCP", "Web", "AllowFunnel", "Foreground", "Services"}
 # reason -> root's one sentence for the key page; every one is class other with the attention kind serve-changed
 REASONS = {
     "serve-changed": "Tailscale's settings for the key page changed, so Zeus refused. Nothing ran.",
@@ -42,6 +51,10 @@ def _port_of(hostport):
 def mapping_problem(status, cfg):
     """None when `tailscale serve status --json` (as a dict) maps the key port exactly as installed, else a reason."""
     port, hostport = str(cfg.keyport), "%s:%d" % (cfg.rp_id, cfg.keyport)
+    if set(status) - STATUS_KEYS:
+        return "serve-changed"
+    if status.get("Foreground") not in (None, {}) or status.get("Services") not in (None, {}):
+        return "serve-changed"          # a foreground session or a service could map the key port too (review N4)
     tcp, web, funnel = status.get("TCP"), status.get("Web"), status.get("AllowFunnel", {})
     if not isinstance(tcp, dict) or not isinstance(web, dict) or not isinstance(funnel, (dict, type(None))):
         return "serve-changed"
@@ -72,9 +85,30 @@ def problem(ctx, cfg):
         return "serve-unreadable"
     if prefs.get("OperatorUser") not in (None, ""):
         return "operator-set"
-    env = ctx.cmd([SYSTEMCTL, "show", "tailscaled.service", "-p", "Environment"], TIMEOUT_S)
-    if env.code != 0:
+    return cert_uid_problem(ctx)
+
+
+def _read(path, limit):
+    try:
+        with open(path, "rb") as f:
+            return f.read(limit)
+    except OSError:
+        return None
+
+
+def cert_uid_problem(ctx):
+    """None when tailscaled, as it runs, has no TS_PERMIT_CERT_UID in its environment; "cert-uid-set" when it has;
+    "serve-unreadable" when that cannot be read: no main process, a pid whose name is not tailscaled (it restarted in
+    between), an environment that does not read or is over 1 MB."""
+    res = ctx.cmd(MAIN_PID, TIMEOUT_S)
+    pid = res.out.strip() if res.code == 0 else ""
+    if not re.fullmatch(r"[1-9][0-9]{0,9}", pid):
         return "serve-unreadable"
-    if "TS_PERMIT_CERT_UID" in env.out:
+    folder = ctx.proc / pid
+    comm = _read(folder / "comm", 64)
+    environ = _read(folder / "environ", ENVIRON_MAX + 1)
+    if comm is None or comm.rstrip(b"\n") != b"tailscaled" or environ is None or len(environ) > ENVIRON_MAX:
+        return "serve-unreadable"
+    if any(var.startswith(b"TS_PERMIT_CERT_UID=") for var in environ.split(b"\0")):
         return "cert-uid-set"
     return None

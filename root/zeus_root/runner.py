@@ -7,14 +7,19 @@ A start, under lib/lock:
 3. leftovers in work/ (a crashed start) go to quarantine, their nonce spent if readable, never re-run;
 4. spent nonces older than their keep are pruned;
 5. at most 50 inbox entries are taken (take.take); more than 50 waiting or more than 200 in quarantine is a flood:
-   root changes pause for an hour and one `flood` attention line is written (none when already paused);
-6. each entry: the garbage cap, the file rules of the entry, the strict parse (both quarantine, spending nothing and
-   answering nothing), then a check-in (reach.check_in) or a run or check-key record: webauthn.verify (which spends
+   root changes pause for an hour, and one `flood` attention line is written unless a flood was already seen within
+   the hour before (state.flood_seen), whatever pause is on: one line for a flood that lasts (D9, review N2);
+6. each entry: the hourly cap (state.open_slot: every start together, the busy one included, opens at most 50 inbox
+   entries an hour; past it an entry goes to quarantine unopened, and the start writes one `open-cap` line for all of
+   them: review M1), the file rules of the entry, the strict parse (both quarantine, spending nothing and answering
+   nothing), then a check-in (reach.check_in) or a run or check-key record: webauthn.verify (which spends
    the nonce whatever it answers), then the pause, Serve's mapping and the operator, the limits, at most one script per
    start, a running game, the script's hash, and the run with hold-or-undo-once.
 
-A start that finds lib/lock held for longer than ctx.lock_wait_s (a put-back or a command holds it) answers every entry
-it takes `busy`. Before that it checks each record up to and including its signature (plan v6, Dax 2026-11-12) and
+A start that finds lib/lock held for longer than ctx.lock_wait_s (a put-back or a command holds it) takes nothing when
+it sees a flood (the start that next holds lib/lock applies the flood rule; until then the path unit starts it again,
+each try waiting for the lock), and otherwise answers every entry it takes `busy`, within the same hourly cap. Before
+that it checks each record up to and including its signature (plan v6, Dax 2026-11-12) and
 spends the nonce with the signed exp when the signature checked out, else with none: a record root refused busy can
 never run later when sent again as it was. It writes its lines under state.write_lock only, and touches no other
 state. zeus-root-run.service is a oneshot, so two run starts never overlap; a busy start overlaps only reach-tick,
@@ -40,7 +45,7 @@ from .webauthn import Refusal
 
 HOUR_S = 3600
 PAUSE_COUNTED = 3                   # counted refusals within an hour that pause root changes for an hour (D9)
-GARBAGE_PER_HOUR = 50               # garbage records root opens per hour; past it, entries wait in quarantine unread
+OPEN_PER_HOUR = 50                  # inbox entries every start together opens an hour; past it, quarantined unread
 STAGE_LINE = b"ZEUS_STAGE=change"
 REACH_SCHEMA = {"type": str, "run": str, "seen": dict}
 ASSERTION_FIELDS = ("clientDataJSON", "authenticatorData", "signature")
@@ -76,9 +81,10 @@ SENTENCES = {
 
 class ScriptOutcome(NamedTuple):
     exit: int               # the script's exit code; a negative number is the signal that ended it; 127: did not start
-    staged: bool            # it printed ZEUS_STAGE=change on a line of its own
+    staged: bool            # it printed ZEUS_STAGE=change at the end of a line
     secs: float
     timed_out: bool         # its limit ran out and its whole process group was killed
+    started: bool           # False when it could not start at all (exit 127 then; a script's own 127 says True)
 
 
 class Loaded(NamedTuple):
@@ -177,12 +183,14 @@ def script_matches(ctx, entry):
 
 
 def _staged(log_path, offset):
-    """Whether the log, from offset on, holds a line that is exactly ZEUS_STAGE=change (a CR before the newline too)."""
+    """Whether the log, from offset on, holds a line that ends in ZEUS_STAGE=change (a CR before the newline too). A
+    line that only ends in it counts too (review N5): a script that printed part of a line just before its stage line
+    still undoes a failure; reading too much as staged costs an undo, reading too little would skip one."""
     try:
         with open(log_path, "rb") as f:
             f.seek(offset)
             for line in f:
-                if line.rstrip(b"\r\n") == STAGE_LINE:
+                if line.rstrip(b"\r\n").endswith(STAGE_LINE):
                     return True
     except OSError:
         return False
@@ -207,7 +215,7 @@ def run_entry(ctx, entry, run, limit_s, log_path):
                                     cwd="/", env={"PATH": COMMAND_PATH, "ZEUS_ROOT_RUN": run}, close_fds=True,
                                     start_new_session=True)
         except OSError:
-            return ScriptOutcome(127, False, round(time.monotonic() - t0, 3), False)
+            return ScriptOutcome(127, False, round(time.monotonic() - t0, 3), False, False)
         timed_out = False
         try:
             code = proc.wait(timeout=limit_s)
@@ -221,7 +229,7 @@ def run_entry(ctx, entry, run, limit_s, log_path):
         secs = round(time.monotonic() - t0, 3)
     finally:
         os.close(fd)
-    return ScriptOutcome(code, _staged(log_path, offset), secs, timed_out)
+    return ScriptOutcome(code, _staged(log_path, offset), secs, timed_out, True)
 
 
 def log_path(ctx, run):
@@ -241,10 +249,11 @@ class _Start:
         self.loaded = loaded        # Loaded, or None when problem says why not
         self.problem = problem
         self.ran = False            # a script ran in this start (a put-back's undo included)
-        self.over_cap = 0           # entries set aside unread past the garbage cap
+        self.over_cap = 0           # entries set aside unread past the hourly cap
 
 
-def _load_or_problem(ctx):
+def load_or_problem(ctx):
+    """(Loaded, None), or (None, why) when root's own files break the rules or do not load."""
     try:
         return load(ctx), None
     except TreeProblem as e:
@@ -269,43 +278,53 @@ def start(ctx):
 
 
 def _locked_start(ctx):
-    loaded, problem = _load_or_problem(ctx)
+    loaded, problem = load_or_problem(ctx)
     s = _Start(ctx, loaded, problem)
     if problem is None:
         s.ran = reach.due(ctx, loaded) > 0
     else:
         logs.attention(ctx, "file-rules", "Root's own files break the ownership or mode rules (%s); nothing runs "
                        "until they are fixed" % problem, None)
-    leftovers(ctx)
+    leftovers(ctx, loaded)
     state.prune_nonces(ctx)
     taken = take.take(ctx, ctx.run / "inbox", "run")
     _flood(ctx, taken)
     for path in taken.paths:
         _entry(s, path)
-    if s.over_cap:
-        logs.append_run(ctx, {"run": None, "outcome": "refused", "class": "garbage", "reason": "garbage-cap",
-                              "count": s.over_cap})
+    _cap_line(ctx, s.over_cap)
     return 0
 
 
+def _cap_line(ctx, count):
+    """The one line for every entry a start set aside unopened past the hourly cap (class garbage, so Elaia's
+    garbage warning sees it)."""
+    if count:
+        logs.append_run(ctx, {"run": None, "outcome": "refused", "class": "garbage", "reason": "open-cap",
+                              "count": count})
+
+
 def _flood(ctx, taken):
-    """More than 50 waiting or more than 200 in quarantine: pause for an hour, and one `flood` line unless root
-    changes were already paused (only the cause buzzes, D9)."""
+    """More than 50 waiting or more than 200 in quarantine: pause root changes for an hour (the owner's pause stays
+    as it is), and one `flood` line unless a flood was already seen within the hour before: one line for a flood that
+    lasts, whatever pause is on, the owner's included (only the cause buzzes, D9; review N2)."""
     in_quarantine = take.quarantine_count(ctx)
     if taken.left == 0 and in_quarantine <= take.FLOOD_QUARANTINE:
         return
-    was_paused = state.pause_until(ctx) is not None
+    new = state.flood_seen(ctx)
     state.set_pause(ctx, ctx.now() + HOUR_S, "flood")
-    if not was_paused:
-        logs.attention(ctx, "flood", "Zeus's inbox was flooded (%d waiting, %d in quarantine); root changes are "
-                       "paused for an hour" % (len(taken.paths) + taken.left, in_quarantine), None)
+    if new:
+        paused = ("stay paused until you resume them" if state.pause_until(ctx) == "owner"
+                  else "are paused for an hour")
+        logs.attention(ctx, "flood", "Zeus's inbox was flooded (%d waiting, %d in quarantine); root changes %s"
+                       % (len(taken.paths) + taken.left, in_quarantine, paused), None)
 
 
-def leftovers(ctx):
+def leftovers(ctx, loaded):
     """Every entry already in work/ when a start (or boot) begins was left by a crashed start: its nonce is spent if
     it reads as a record with a canonical nonce (exp None: its signature is not checked), a result that still says
     running becomes failed (the change may be half done; nothing is put back), and it goes to quarantine, never
-    re-run. A spend that fails is logged and the entry is quarantined anyway."""
+    re-run. A spend that fails is logged and the entry is quarantined anyway. loaded (None when root's files are
+    broken) gives the crashed sentence its title."""
     for path in take.leftovers(ctx):
         try:
             data = take.open_entry(ctx, path)
@@ -326,28 +345,38 @@ def leftovers(ctx):
             except (state.Busy, state.Broken, OSError) as e:
                 logs.append_run(ctx, {"run": run, "outcome": "refused", "class": "other", "reason": "nonce-store",
                                       "error": type(e).__name__})
-            _crashed_result(ctx, run, obj.get("action"))
+            _crashed_result(ctx, run, loaded)
         try:
             take.quarantine(ctx, path, None, "leftover")
         except FileNotFoundError:
             continue
 
 
-def _crashed_result(ctx, run, action):
+def _crashed_result(ctx, run, loaded):
+    """A result that still says running becomes failed. The sentence names the action from root's own result and
+    root's list, never from the leftover, whose text the gate wrote (review S6)."""
     try:
         res = logs.read_result(ctx, run)
     except state.Broken:
         return
     if res is not None and res["state"] == "running":
-        title = action if isinstance(action, str) else "This action"
+        entry = loaded.actions.get(res["action"]) if loaded is not None else None
+        title = entry.title if entry is not None else "This action"
         logs.write_result(ctx, run, state="failed", sentence=sentence("crashed", title), undo_ran=False)
+
+
+def _opened(s, path):
+    """One slot of the hour's cap for this entry, or the entry goes to quarantine unopened (review M1)."""
+    if state.open_slot(s.ctx, OPEN_PER_HOUR):
+        return True
+    take.quarantine_unopened(s.ctx, path)
+    s.over_cap += 1
+    return False
 
 
 def _entry(s, path):
     ctx = s.ctx
-    if state.refusals_in_hour(ctx, "garbage") >= GARBAGE_PER_HOUR:
-        take.quarantine_unopened(ctx, path)
-        s.over_cap += 1
+    if not _opened(s, path):
         return
     data = take.open_entry(ctx, path)
     if isinstance(data, take.Bad):
@@ -357,7 +386,6 @@ def _entry(s, path):
         rec = parse_record(data)
     except Malformed:
         take.quarantine(ctx, path, None, "malformed", data=data)
-        state.count_refusal(ctx, "garbage")
         return
     if rec["type"] == "reach":
         _check_in(s, rec)
@@ -370,11 +398,10 @@ def _entry(s, path):
 
 
 def _check_in(s, rec):
-    if reach.check_in(s.ctx, rec):
+    if reach.check_in(s.ctx, rec, s.loaded):
         return
     logs.append_run(s.ctx, {"run": rec["run"], "outcome": "refused", "class": "garbage",
                             "reason": "check-in-refused", "seen": _seen(rec)})
-    state.count_refusal(s.ctx, "garbage")
 
 
 def _seen(rec):
@@ -485,11 +512,11 @@ def _refused(s, rec, run, r, v, extra=None):
 
 
 def _attend(ctx, r, run):
-    """Contract §8f and D9: garbage and not-counted write no line (garbage is counted apart); a counted refusal while
-    paused writes none; the one that makes the third in an hour pauses for an hour and writes `pause` instead of its
-    own line; any other counted refusal writes `refused-counted`; the rest write the kind their reason names."""
+    """Contract §8f and D9: garbage and not-counted write no line (Elaia counts garbage from the log); a counted
+    refusal while paused writes none; the one that makes the third in an hour pauses for an hour and writes `pause`
+    instead of its own line; any other counted refusal writes `refused-counted`; the rest write the kind their reason
+    names, paused or not."""
     if r.cls == "garbage":
-        state.count_refusal(ctx, "garbage")
         return
     if r.cls == "counted":
         paused = state.pause_until(ctx) is not None
@@ -517,7 +544,7 @@ def _spend_failed(s, rec, run, e, cause):
         line.update({"outcome": "refused", "reason": "nonce-store", "class": "other"})
     line["nonce_store"] = type(e).__name__
     logs.append_run(s.ctx, line)
-    if cause is not None and cause.cls in ("counted", "garbage"):
+    if cause is not None and cause.cls == "counted":
         _attend(s.ctx, cause, run)
 
 
@@ -572,26 +599,35 @@ def _run(s, rec, run, entry, v):
 
 
 def _undo(ctx, undo, run):
-    """The undo once, with its own limit (ctx.undo_limit_s). (ran, ok, ScriptOutcome or None)."""
+    """The undo once, with its own limit (ctx.undo_limit_s). (ran, ok, ScriptOutcome or None); ran is False for an
+    undo whose script changed or could not start (review N7)."""
     urun = undo_run_id(run)
     try:
         out = run_entry(ctx, undo, urun, ctx.undo_limit_s, log_path(ctx, urun))
     except Refusal:
         return False, False, None
-    return True, out.exit == 0 and not out.timed_out, out
+    return out.started, out.started and out.exit == 0 and not out.timed_out, out
 
 
 # --- a start that found lib/lock held ------------------------------------------------------------------------------
 
 def _busy_start(ctx):
-    """Answer every entry this start takes `busy` (D10 as amended in plan v6). The file rules and the strict parse
-    still quarantine; a check-in is refused busy (the key page sends it again); a run or check-key record is checked
-    up to its signature (webauthn.signed_exp) when root's files are in order, its nonce spent with that exp or none,
-    then refused busy. Touches no state but the nonces, the readable files of logs.py and quarantine."""
-    loaded, problem = _load_or_problem(ctx)
+    """Answer every entry this start takes `busy` (D10 as amended in plan v6). A flood (more than 50 waiting or more
+    than 200 in quarantine) is left in the inbox for the start that next holds lib/lock, which applies the flood rule
+    (review M1). Each entry takes a slot of the hourly cap first (state.open_slot, shared with every start; past it,
+    quarantined unopened with one `open-cap` line). The file rules and the strict parse still quarantine; a check-in
+    is refused busy (the key page sends it again); a run or check-key record is checked up to its signature
+    (webauthn.signed_exp) when root's files are in order, its nonce spent with that exp or none, then refused busy.
+    Touches no state but the nonces, the hourly cap, the readable files of logs.py and quarantine."""
+    inbox = ctx.run / "inbox"
+    if take.count(inbox) > take.TAKE_LIMIT or take.quarantine_count(ctx) > take.FLOOD_QUARANTINE:
+        return 0
+    loaded, problem = load_or_problem(ctx)
     s = _Start(ctx, loaded, problem)
-    taken = take.take(ctx, ctx.run / "inbox", "busy")
+    taken = take.take(ctx, inbox, "busy")
     for path in taken.paths:
+        if not _opened(s, path):
+            continue
         data = take.open_entry(ctx, path)
         if isinstance(data, take.Bad):
             take.quarantine(ctx, path, data)
@@ -620,4 +656,5 @@ def _busy_start(ctx):
         logs.write_result(ctx, run, action=rec["action"], state="refused", sentence=r.sentence,
                           **{"class": r.cls})
         os.unlink(path)
+    _cap_line(ctx, s.over_cap)
     return 0

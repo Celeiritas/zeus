@@ -176,7 +176,8 @@ def good_tree(ctx):
 FLAGS_OK = 0x01 | 0x04 | 0x08 | 0x10    # UP, UV, BE, BS: a synced passkey confirmed with the fingerprint
 SERVE_STATUS = ("/usr/bin/tailscale", "serve", "status", "--json")
 SERVE_PREFS = ("/usr/bin/tailscale", "debug", "prefs")
-SERVE_ENV = ("/usr/bin/systemctl", "show", "tailscaled.service", "-p", "Environment")
+SERVE_PID = ("/usr/bin/systemctl", "show", "tailscaled.service", "-p", "MainPID", "--value")
+TAILSCALED_PID = "4100"
 
 
 def serve_status(cfg, **over):
@@ -189,13 +190,19 @@ def serve_status(cfg, **over):
     return doc
 
 
-def serve_ok(ctx, cfg, status=None, operator="", env="Environment=\n"):
-    """Make ctx.cmd (a FakeCmd) answer the three reads of serve.problem; status None = the installed mapping."""
+def serve_ok(ctx, cfg, status=None, operator="", environ=b"PATH=/usr/sbin:/usr/bin\0PORT=41641\0"):
+    """Make ctx.cmd (a FakeCmd) answer the reads of serve.problem, and ctx.proc hold tailscaled's process (its name
+    and its environment, no command line, so the game check never matches it); status None = the installed
+    mapping."""
     import json
     from zeus_root.ctx import CmdResult
     ctx.cmd.answers[SERVE_STATUS] = CmdResult(0, json.dumps(serve_status(cfg) if status is None else status), "")
     ctx.cmd.answers[SERVE_PREFS] = CmdResult(0, json.dumps({"OperatorUser": operator, "WantRunning": True}), "")
-    ctx.cmd.answers[SERVE_ENV] = CmdResult(0, env, "")
+    ctx.cmd.answers[SERVE_PID] = CmdResult(0, TAILSCALED_PID + "\n", "")
+    folder = ctx.proc / TAILSCALED_PID
+    folder.mkdir(exist_ok=True)
+    (folder / "comm").write_bytes(b"tailscaled\n")
+    (folder / "environ").write_bytes(environ)
 
 
 class Phone:

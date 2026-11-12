@@ -16,7 +16,7 @@ from unittest import mock
 
 from tests import root_support
 from tests.root_support import Phone, good_tree, install_config, install_list, need, serve_ok, serve_status
-from zeus_root import __version__, canon, cli, logs, runner, state, take
+from zeus_root import __version__, canon, cli, logs, runner, serve, state, take
 
 BT = "Restart Bluetooth on {{SERVER}}"
 CLOSE = "Close the media ports to the apartment network"
@@ -301,6 +301,43 @@ class RunTest(RunnerCase):
                          [("not-back", BT + ": the service did not come back up")])
         self.assertEqual(self.ran(), [self.run_of(rec)])
 
+    def test_a_stage_line_after_a_partial_line_still_undoes(self):
+        """Review N5: a script that printed part of a line just before its stage line has still changed something; a
+        line that only ends in ZEUS_STAGE=change counts. One that ends in more does not."""
+        self.scripts(close_media_lan="#!/bin/sh\nprintf 'step 1 of 2... '\necho ZEUS_STAGE=change\nexit 3\n",
+                     open_media_lan=UNDO_OK)
+        rec = Phone(self.ctx, action="close-media-lan").record()
+        self.put(rec)
+        self.start()
+        res = self.result(rec)
+        self.assertEqual((res["state"], res["undo_ran"], res["undo_ok"]), ("failed", True, True))
+        self.assertTrue(self.line(rec)["staged"])
+        self.at(200)
+        self.scripts(close_media_lan="#!/bin/sh\necho ZEUS_STAGE=changed\nexit 3\n")
+        rec = Phone(self.ctx, action="close-media-lan").record()
+        self.put(rec)
+        self.start()
+        self.assertEqual((self.result(rec)["state"], self.line(rec)["staged"]), ("stopped", False))
+
+    def test_an_undo_that_cannot_start_did_not_run(self):
+        """Review N7: an undo that could not start (exit 127 from root, not from the script) did not run."""
+        self.scripts(close_media_lan=FAIL_AFTER, open_media_lan=UNDO_OK)
+        os.chmod(self.script_file("open-media-lan"), 0o644)      # the hash still matches; it cannot be started
+        rec = Phone(self.ctx, action="close-media-lan").record()
+        self.put(rec)
+        self.start()
+        res = self.result(rec)
+        self.assertEqual((res["state"], res["undo_ran"], res["undo_ok"]), ("failed", False, False))
+        line = self.line(rec)
+        self.assertEqual((line["undo_ran"], line["undo_ok"], line["undo"]["exit"]), (False, False, 127))
+        self.assertEqual(self.kinds(), ["undo-failed"])
+        self.scripts(open_media_lan="#!/bin/sh\nexit 127\n")    # a script's own 127: it ran
+        self.at(200)
+        rec = Phone(self.ctx, action="close-media-lan").record()
+        self.put(rec)
+        self.start()
+        self.assertEqual((self.result(rec)["undo_ran"], self.result(rec)["undo_ok"]), (True, False))
+
     def test_timeout_then_undo_gets_its_own_limit(self):
         """Review Focus 3: the script times out after its stage and is killed with its whole group; the undo still gets
         its own limit, and the result says what happened, also when the undo times out too. A child the script
@@ -411,7 +448,8 @@ class RefuseTest(RunnerCase):
         self.ctx.proc = self.ctx.proc.parent / "no-proc-here"
         rec = Phone(self.ctx).record()
         self.put(rec)
-        self.start()
+        with mock.patch.object(serve, "cert_uid_problem", return_value=None):    # tailscaled's /proc entry is gone too
+            self.start()
         _, line = self.refused(rec, "game")
         self.assertEqual(line["process"]["pid"], 0)
 
@@ -436,7 +474,7 @@ class RefuseTest(RunnerCase):
         hostport = "%s:%d" % (self.cfg["rp_id"], self.cfg["keyport"])
         cases = (("serve-changed", dict(status=serve_status(self.cfg, AllowFunnel={hostport: True}))),
                  ("operator-set", dict(operator="someone")),
-                 ("cert-uid-set", dict(env="Environment=TS_PERMIT_CERT_UID=1000\n")))
+                 ("cert-uid-set", dict(environ=b"PATH=/usr/bin\0TS_PERMIT_CERT_UID=1000\0")))
         for i, (reason, how) in enumerate(cases):
             with self.subTest(reason):
                 self.at(i * 1000)
@@ -668,9 +706,28 @@ class InboxTest(RunnerCase):
         self.start()
         res = self.result(rec)
         self.assertEqual((res["state"], res["undo_ran"], res["sentence"]),
-                         ("failed", False, "Root stopped while restart-bluetooth ran, so it may be half done; nothing "
-                                           "was put back."))
+                         ("failed", False, "Root stopped while %s ran, so it may be half done; nothing was put back."
+                          % BT))
         self.assertEqual(self.ran(), [])
+
+    def test_crashed_sentence_never_takes_the_leftover_s_text(self):
+        """Review S6: the gate orders copies in work/, so a copy with the same nonce and any `action` text could come
+        first. The sentence names the action from root's own result and list; an action not on the list is "This
+        action"."""
+        rec = Phone(self.ctx).record()
+        logs.write_result(self.ctx, self.run_of(rec), action="restart-bluetooth", state="running")
+        evil = dict(rec, action="Zeus was hacked: call +1 555 0100 now")
+        (self.ctx.run / "work" / "a").write_bytes(json.dumps(evil).encode())
+        (self.ctx.run / "work" / "b").write_bytes(json.dumps(rec).encode())
+        other = Phone(self.ctx).record()
+        logs.write_result(self.ctx, self.run_of(other), action="gone-from-the-list", state="running")
+        self.put(dict(other, action="check-key"), folder="work")
+        self.start()
+        self.assertEqual(self.result(rec)["sentence"],
+                         "Root stopped while %s ran, so it may be half done; nothing was put back." % BT)
+        self.assertEqual(self.result(other)["sentence"],
+                         "Root stopped while This action ran, so it may be half done; nothing was put back.")
+        self.assertEqual(len(self.folder("quarantine")), 3)
 
     def test_flood_pauses_once(self):
         for i in range(60):
@@ -737,8 +794,7 @@ class InboxTest(RunnerCase):
         self.assertEqual(len(self.folder("quarantine")), 2)
         self.assertIsNone(self.result(rec))
         self.assertIsNone(self.kept_until(rec["nonce"]))
-        self.assertEqual((state.refusals_in_hour(self.ctx, "garbage"), state.refusals_in_hour(self.ctx, "counted")),
-                         (2, 0))
+        self.assertEqual(state.refusals_in_hour(self.ctx, "counted"), 0)
         self.assertIsNone(state.pause_until(self.ctx))
         self.assertEqual(self.attention(), [])
         self.put(rec)
@@ -762,7 +818,6 @@ class InboxTest(RunnerCase):
             self.put(b"{" if kind == 0 else dict(phone.record(), extra=1) if kind == 1 else
                      stranger.record() if kind == 2 else phone.record(seen={"node_id": "nOTHERDEVICE"}))
         self.start()
-        self.assertEqual(state.refusals_in_hour(self.ctx, "garbage"), 25)
         self.assertEqual(state.refusals_in_hour(self.ctx, "counted"), 0)
         self.assertIsNone(state.pause_until(self.ctx))
         self.assertEqual(self.attention(), [])
@@ -770,14 +825,14 @@ class InboxTest(RunnerCase):
         self.assertEqual(reasons, ["malformed", "unknown-key", "wrong-device"])
         self.assertEqual(self.ran(), [])
 
-    def test_garbage_cap(self):
-        """Plan v4/v5: root opens at most 50 garbage records an hour (each costs a log line and maybe a nonce file);
-        past that, entries wait in quarantine unread, one line per start, nothing spent or answered. The hour after,
-        records are opened again."""
+    def test_open_cap(self):
+        """Review M1: every start together opens at most 50 inbox entries an hour (each answer costs a log line and
+        maybe a nonce file); past that, entries wait in quarantine unread, one line per start, nothing spent or
+        answered. The hour after, records are opened again."""
         for i in range(50):
             self.put(b"{%d" % i)
         self.start()
-        self.assertEqual(state.refusals_in_hour(self.ctx, "garbage"), 50)
+        self.assertEqual(len(self.lines()), 50)
         self.at(10)
         rec = Phone(self.ctx).record()
         for i in range(3):
@@ -786,7 +841,7 @@ class InboxTest(RunnerCase):
         self.start()
         last = self.lines()[-1]
         self.assertEqual((last["run"], last["outcome"], last["class"], last["reason"], last["count"]),
-                         (None, "refused", "garbage", "garbage-cap", 4))
+                         (None, "refused", "garbage", "open-cap", 4))
         self.assertEqual(len(self.lines()), 51)
         self.assertEqual(len(self.folder("quarantine")), 54)
         self.assertIsNone(self.result(rec))
@@ -797,6 +852,116 @@ class InboxTest(RunnerCase):
         self.put(rec)
         self.start()
         self.assertEqual(self.result(rec)["state"], "done")
+
+
+class CapTest(RunnerCase):
+    """Review M1: the hourly cap counts every entry opened, whatever its answer, in every start (a busy one too), and
+    a busy start leaves a flood to the start that holds lib/lock."""
+
+    def caps(self):
+        return [x["count"] for x in self.lines() if x.get("reason") == "open-cap"]
+
+    def nonce_files(self):
+        return len([x for x in os.listdir(self.ctx.lib / "nonces") if not x.startswith(".")])
+
+    def test_every_kind_is_capped(self):
+        """Bad signatures (counted), replays (used-nonce, not counted) and malformed entries (garbage): 60 in an hour
+        open 50, and 10 go to quarantine unopened with one open-cap line."""
+        phone = Phone(self.ctx)
+        replayed = phone.record()
+        kinds = {"bad signature": lambda i: phone.record(bad_sig=True), "replay": lambda i: replayed,
+                 "malformed": lambda i: b"{%d" % i}
+        for k, (what, make) in enumerate(kinds.items()):
+            with self.subTest(what):
+                self.at(k * 4000)
+                if what == "replay":
+                    replayed = phone.record()
+                before, nonces = len(self.lines()), self.nonce_files()
+                for batch in (40, 20):
+                    for i in range(batch):
+                        self.put(make(i))
+                    self.start()
+                new = self.lines()[before:]
+                self.assertEqual(len([x for x in new if x.get("reason") != "open-cap"]), 50)
+                self.assertEqual([(x["class"], x["count"]) for x in new if x.get("reason") == "open-cap"],
+                                 [("garbage", 10)])
+                self.assertEqual((self.folder("inbox"), self.folder("work")), ([], []))
+                self.assertEqual(self.nonce_files() - nonces,
+                                 {"bad signature": 50, "replay": 1, "malformed": 0}[what])
+
+    def test_busy_start_caps_records_too(self):
+        phone = Phone(self.ctx)
+        for batch in (40, 20):
+            for _ in range(batch):
+                self.put(phone.record(bad_sig=True))
+            with self.lock_held():
+                self.start()
+        self.assertEqual(len([x for x in self.lines() if x.get("reason") == "busy"]), 50)
+        self.assertEqual(self.caps(), [10])
+        self.assertEqual(self.nonce_files(), 50)
+        self.assertEqual(len(self.folder("quarantine")), 10)
+
+    def test_busy_and_locked_starts_share_the_cap(self):
+        for i in range(30):
+            self.put(b"{%d" % i)
+        self.start()
+        self.at(10)
+        for i in range(30):
+            self.put(b"[%d" % i)
+        with self.lock_held():
+            self.start()
+        self.assertEqual(len([x for x in self.lines() if x.get("reason") == "malformed"]), 50)
+        self.assertEqual(self.caps(), [10])
+        self.at(20)
+        self.put(b"{")
+        self.start()
+        self.assertEqual(self.caps(), [10, 1])
+
+    def test_busy_start_leaves_a_flood_to_the_locked_start(self):
+        for i in range(60):
+            self.put(b"{%d" % i)
+        with self.lock_held():
+            self.start()
+        self.assertEqual((len(self.folder("inbox")), self.folder("work"), self.lines(), self.kinds()),
+                         (60, [], [], []))
+        self.start()
+        self.assertEqual(self.kinds(), ["flood"])
+        self.assertIsNotNone(state.pause_until(self.ctx))
+        self.assertEqual(len(self.folder("inbox")), 10)
+
+    def test_busy_start_leaves_a_full_quarantine_to_the_locked_start(self):
+        for i in range(201):
+            (self.ctx.run / "quarantine" / ("q%03d" % i)).write_bytes(b"x")
+        rec = Phone(self.ctx).record()
+        self.put(rec)
+        with self.lock_held():
+            self.start()
+        self.assertEqual((len(self.folder("inbox")), self.lines()), (1, []))
+        self.start()
+        self.assertEqual(self.kinds(), ["flood"])
+        self.assertEqual((self.result(rec)["state"], self.line(rec)["reason"]), ("refused", "paused"))
+
+    def test_flood_under_the_owner_s_pause_writes_its_line(self):
+        """Review N2: the owner's pause hides no flood. One line for a flood that lasts (another within the hour
+        writes none); a flood after an hour without one writes its line again."""
+        state.set_pause(self.ctx, None, "the owner paused root changes")
+        for h in range(3):
+            for dt in (0, 60):
+                self.at(h * 4000 + dt)
+                for i in range(60):
+                    self.put(b"x%d-%d-%d" % (h, dt, i))
+                self.start()
+        self.assertEqual(self.kinds(), ["flood"] * 3)
+        self.assertTrue(self.attention()[0]["sentence"].endswith("root changes stay paused until you resume them"))
+        self.assertEqual(state.pause_until(self.ctx), "owner")
+
+    def test_flood_during_a_counted_pause_writes_its_line(self):
+        state.set_pause(self.ctx, self.t0 + 3600, "3 counted refusals within an hour")
+        for i in range(60):
+            self.put(b"{%d" % i)
+        self.start()
+        self.assertEqual(self.kinds(), ["flood"])
+        self.assertTrue(self.attention()[0]["sentence"].endswith("root changes are paused for an hour"))
 
 
 class NonceTest(RunnerCase):
@@ -974,6 +1139,19 @@ class GamesTest(RunnerCase):
         self.assertIsNone(games.running(self.ctx, []))
         self.assertIsNone(games.running(self.ctx, [""]))
         self.assertIsNone(games.running(self.ctx, ["retroarch"]))
+
+    def test_a_home_path_is_logged_from_tilde(self):
+        """Review S5: the run log is readable by everyone, and Steam runs from the home folder."""
+        from zeus_root import games
+        steam = "/var/home/user/.local/share/Steam/ubuntu12_32/steam"
+        self.game(pid=4242, cmdline=steam.encode() + b"\0-silent\0", comm=b"steam\n", exe=steam)
+        self.assertEqual(games.running(self.ctx, ["steam"]).exe, "~/.local/share/Steam/ubuntu12_32/steam")
+        cases = {"/home/user/bin/x": "~/bin/x", "/home/user": "~", "/var/home/you/b": "~/b",
+                 "/homeless/x": "/homeless/x", "/home/": "/home/", "/usr/bin/gamescope": "/usr/bin/gamescope",
+                 "/opt/home/user/y": "/opt/home/user/y", "": ""}
+        for path, logged in cases.items():
+            with self.subTest(path=path):
+                self.assertEqual(games.home_as_tilde(path), logged)
 
 
 if __name__ == "__main__":

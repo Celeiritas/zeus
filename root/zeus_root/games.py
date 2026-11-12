@@ -3,12 +3,15 @@
 Root refuses an entry with `game_check` while a game runs, and delays a put-back by at most `reach_game_max_s`. A name
 from config.json's `games` matches as a case-insensitive substring of a process's command line, as the old scripts'
 `pgrep -f -i` did. The log names the process that matched (pid, user, name, program path), so a fake or forgotten
-"game" shows. Everything is read from ctx.proc (/proc), so tests use a fake folder.
+"game" shows; a program path in someone's home folder is logged from `~` on, because the log is readable by everyone
+(Steam runs from the home folder: review S5). Everything is read from ctx.proc (/proc), so tests use a fake folder.
 """
 import os
+import re
 from typing import NamedTuple, Optional
 
 CMDLINE_MAX = 65536
+_HOME_RE = re.compile(r"/(?:var/)?home/[^/]+(?=/|$)")
 
 
 class Proc(NamedTuple):
@@ -69,5 +72,11 @@ def running(ctx, names) -> Optional[Proc]:
             exe = os.readlink(folder / "exe")
         except OSError:
             exe = ""
-        return Proc(pid=pid, user=_user(uid), comm=comm, exe=exe)
+        return Proc(pid=pid, user=_user(uid), comm=comm, exe=home_as_tilde(exe))
     return None
+
+
+def home_as_tilde(path):
+    """/home/<name>/... and /var/home/<name>/... become ~/... (the path's start only)."""
+    m = _HOME_RE.match(path)
+    return "~" + path[m.end():] if m else path
