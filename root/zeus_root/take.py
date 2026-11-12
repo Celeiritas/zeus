@@ -162,6 +162,14 @@ def quarantine(ctx, path, bad, reason="malformed", data=None):
                        % bad.why, None)
 
 
+def quarantine_unopened(ctx, path):
+    """Move a taken entry into run/quarantine/ without opening, reading or logging it: the runner's garbage cap (Z2b).
+    Root opens at most runner.GARBAGE_PER_HOUR garbage records an hour; past that, entries wait in quarantine unread
+    and the start writes one line for all of them (runner.start), so a broken or hostile gate cannot make root spend
+    a nonce file and a log line on each one. Nothing of such an entry is spent or answered."""
+    os.rename(path, ctx.run / "quarantine" / path.name)
+
+
 def quarantine_count(ctx):
     with os.scandir(ctx.run / "quarantine") as it:
         return sum(1 for _ in it)

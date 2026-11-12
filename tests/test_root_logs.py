@@ -139,6 +139,22 @@ class ResultTest(LogCase):
             with self.subTest(run=run, fields=fields), self.assertRaises(ValueError):
                 logs.write_result(self.ctx, run, **fields)
 
+    def test_read_result(self):
+        """The runner reads a result back (a leftover's that still says running); one that does not read back is
+        Broken, never guessed."""
+        from zeus_root import state
+        self.assertIsNone(logs.read_result(self.ctx, RUN))
+        logs.write_result(self.ctx, RUN, action="close-media-lan", state="running")
+        r = logs.read_result(self.ctx, RUN)
+        self.assertEqual((set(r), r["state"], r["action"]), (RESULT_KEYS, "running", "close-media-lan"))
+        for bad in (b'{"run":', b'[]', b'{"run":"x"}'):
+            with self.subTest(bad=bad):
+                (self.ctx.run / "results" / (RUN + ".json")).write_bytes(bad)
+                with self.assertRaises(state.Broken):
+                    logs.read_result(self.ctx, RUN)
+        with self.assertRaises(ValueError):
+            logs.read_result(self.ctx, "../" + RUN)
+
 
 class AttentionTest(LogCase):
     def test_attention_line_keys_and_fold(self):

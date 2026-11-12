@@ -286,6 +286,74 @@ class TestReplay(unittest.TestCase):
                 self.assertEqual(spend.calls, 1)
 
 
+class TestHeldBack(unittest.TestCase):
+    """Plan v6, item 13 (Dax 2026-11-12): a lying gate keeps the owner's first signed try (A), lets the owner press
+    again (B), runs B, then hands A in while it is still fresh. Root keeps B's exp with the key's counter and refuses A
+    quietly (`older-than-last`: not counted, no buzz): A neither runs a second time (a passkey whose counter stays 0)
+    nor raises a false "copied" (one that counts)."""
+    setUp, each = TestReplay.setUp, TestReplay.each
+
+    def verify(self, rec, keys, counter, spend, last_exp):
+        return self.w.verify(rec, keys, _cfg(), rec["list"], rec["exp"] - 60, counter, spend, last_exp)
+
+    def test_older_than_last_is_quiet(self):
+        for name, rec, keys in self.each():
+            for counter in (0, 1, 2, 9):
+                for last in (rec["exp"], rec["exp"] + 30):
+                    with self.subTest(name, counter=counter, last=last):
+                        spend = Spender()
+                        with self.assertRaises(self.w.Refusal) as caught:
+                            self.verify(rec, keys, counter, spend, last)
+                        r = caught.exception
+                        self.assertEqual((r.reason, r.cls, r.attention), ("older-than-last", "not-counted", None))
+                        self.assertEqual((spend.calls, spend.exps), (1, [rec["exp"]]))
+
+    def test_a_later_record_than_the_last_passes(self):
+        for name, rec, keys in self.each():
+            with self.subTest(name):
+                self.assertTrue(self.verify(rec, keys, 1, Spender(), rec["exp"] - 1))
+                self.assertTrue(self.verify(rec, keys, 1, Spender(), None))
+
+    def test_used_nonce_and_forgeries_keep_their_own_reason(self):
+        """older-than-last comes after the signature, freshness and the spent nonce: a resend stays used-nonce and a
+        forgery naming a held-back exp stays counted."""
+        for name, rec, keys in self.each():
+            sig = canon.b64u_decode(rec["signature"])
+            forged = dict(rec, signature=canon.b64u_encode(sig[:-1] + bytes([sig[-1] ^ 1])))
+            for what, r, spent, reason in (("resend", rec, (rec["nonce"],), "used-nonce"),
+                                           ("forged", forged, (), "signature")):
+                with self.subTest(name, what=what):
+                    with self.assertRaises(self.w.Refusal) as caught:
+                        self.verify(r, keys, 1, Spender(spent), rec["exp"] + 30)
+                    self.assertEqual(caught.exception.reason, reason)
+
+
+class TestSignedExp(unittest.TestCase):
+    """Plan v6, the busy choice: a record the runner refuses busy at lib/lock is checked up to its signature, and its
+    nonce is kept until a day after the signed exp when the signature checked out. signed_exp spends nothing, reads no
+    clock and never raises for a bad record."""
+    setUp, each = TestReplay.setUp, TestReplay.each
+
+    def test_genuine_gives_its_exp_whatever_the_time(self):
+        for name, rec, keys in self.each():
+            with self.subTest(name):
+                self.assertEqual(self.w.signed_exp(rec, keys, _cfg()), rec["exp"])
+
+    def test_anything_short_of_a_good_signature_gives_none(self):
+        for name, rec, keys in self.each():
+            sig = canon.b64u_decode(rec["signature"])
+            auth = canon.b64u_decode(rec["authenticatorData"])
+            for what, bad, ks in (
+                    ("signature", dict(rec, signature=canon.b64u_encode(sig[:-1] + bytes([sig[-1] ^ 1]))), keys),
+                    ("exp moved", dict(rec, exp=rec["exp"] + 86400), keys),
+                    ("device", dict(rec, seen=dict(rec["seen"], node_id="nOTHERDEVICE")), keys),
+                    ("unknown key", rec, {}),
+                    ("short auth data", dict(rec, authenticatorData=canon.b64u_encode(auth[:-1])), keys),
+                    ("no seen", {k: v for k, v in rec.items() if k != "seen"}, keys)):
+                with self.subTest(name, what=what):
+                    self.assertIsNone(self.w.signed_exp(bad, ks, _cfg()))
+
+
 class TestRefusals(Base):
     def test_forged_baseline_passes(self):
         """The forging helper itself makes a record that passes: every refusal below comes from its one change."""
@@ -682,7 +750,7 @@ class TestRefusals(Base):
             self.verify(missing)
 
     def test_refusal_table(self):
-        """The classes and attention kinds of plan Task 6 (contract 8e, 8f)."""
+        """The classes and attention kinds of plan Task 6 (contract 8e, 8f), and item 13's quiet older-than-last."""
         want = {"unknown-key": ("garbage", None), "revoked-key": ("garbage", None),
                 "wrong-action-key": ("garbage", None), "wrong-user": ("garbage", None),
                 "wrong-device": ("garbage", None), "challenge": ("counted", "refused-counted"),
@@ -690,7 +758,7 @@ class TestRefusals(Base):
                 "uv": ("counted", "refused-counted"), "signature": ("counted", "refused-counted"),
                 "counter": ("other", "copied-key"), "be-changed": ("other", "copied-key"),
                 "expired": ("not-counted", None), "used-nonce": ("not-counted", None),
-                "list-changed": ("other", "list-changed")}
+                "older-than-last": ("not-counted", None), "list-changed": ("other", "list-changed")}
         self.assertEqual({k: v[:2] for k, v in self.w.REFUSALS.items()}, want)
         from zeus_root import logs
         for reason, (cls, att, sentence) in self.w.REFUSALS.items():

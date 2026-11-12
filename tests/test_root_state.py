@@ -361,6 +361,31 @@ class CounterTest(StateCase):
                 state.set_counter(self.ctx, REF, n, bs)
         with self.assertRaises(ValueError):
             state.set_counter(self.ctx, "XYZ", 1, False)
+        for exp in (1.5, True, "1000"):
+            with self.subTest(exp=exp), self.assertRaises(ValueError):
+                state.set_counter(self.ctx, REF, 1, False, exp)
+
+    def test_key_state_keeps_the_last_signed_exp_and_never_moves_it_back(self):
+        """Plan v6, item 13: the exp of the last record accepted with a key is kept with its counter, so an older one
+        is refused before the counter check; a smaller exp or none never replaces a larger one."""
+        self.assertEqual(state.key_state(self.ctx, REF), (None, None))
+        state.set_counter(self.ctx, REF, 1, True, 1000)
+        self.assertEqual(state.key_state(self.ctx, REF), (1, 1000))
+        state.set_counter(self.ctx, REF, 2, True, 900)
+        self.assertEqual(state.key_state(self.ctx, REF), (2, 1000))
+        state.set_counter(self.ctx, REF, 3, True)
+        self.assertEqual(state.key_state(self.ctx, REF), (3, 1000))
+        state.set_counter(self.ctx, REF, 4, True, 1100)
+        self.assertEqual(state.key_state(self.ctx, REF), (4, 1100))
+        self.assertEqual(state.get_counter(self.ctx, REF), 4)
+
+    def test_key_state_of_an_entry_from_before_the_exp(self):
+        """An entry written before 0.8.2 has no exp: None, never a guess. A wrong exp type does not read back."""
+        (self.ctx.lib / "counters.json").write_bytes(b'{"%s":{"bs":true,"count":4,"t":1}}\n' % REF.encode())
+        self.assertEqual(state.key_state(self.ctx, REF), (4, None))
+        (self.ctx.lib / "counters.json").write_bytes(b'{"%s":{"bs":true,"count":4,"exp":"1","t":1}}\n' % REF.encode())
+        with self.assertRaises(state.Broken):
+            state.key_state(self.ctx, REF)
 
 
 class PauseTest(StateCase):
@@ -412,6 +437,20 @@ class RefusalTest(StateCase):
         self.assertEqual(state.count_refusal(self.ctx, "garbage"), 1)  # each class counts apart
         self.at(7200)  # 1000, 3599 and 3600 are all an hour old or more: only this one counts
         self.assertEqual(state.count_refusal(self.ctx, "counted"), 1)
+
+    def test_refusals_in_hour_only_reads(self):
+        """The runner's garbage cap reads the count without adding to it."""
+        self.assertEqual(state.refusals_in_hour(self.ctx, "garbage"), 0)
+        state.count_refusal(self.ctx, "garbage")
+        self.at(10)
+        state.count_refusal(self.ctx, "garbage")
+        for _ in range(3):
+            self.assertEqual(state.refusals_in_hour(self.ctx, "garbage"), 2)
+        self.assertEqual(state.refusals_in_hour(self.ctx, "counted"), 0)
+        self.at(3600)  # the first is an hour old
+        self.assertEqual(state.refusals_in_hour(self.ctx, "garbage"), 1)
+        self.at(3610)
+        self.assertEqual(state.refusals_in_hour(self.ctx, "garbage"), 0)
 
 
 class AttentionTest(StateCase):
@@ -489,6 +528,27 @@ class FilesTest(StateCase):
             self.assertLess(time.monotonic() - start, 2)
         with state.lock(self.ctx):
             pass
+
+    def test_write_lock_busy_is_its_own_kind(self):
+        """lib/write-lock is apart from lib/lock: a start holding lib/lock never blocks the busy start's lines, and a
+        write lock held too long raises WriteBusy, never the runner's busy refusal (a plain Busy)."""
+        root_support.need("linux")
+        from zeus_root import logs
+        self.ctx.lock_wait_s = 0.2
+        with state.lock(self.ctx):
+            with state.write_lock(self.ctx):
+                pass
+            logs.append_run(self.ctx, {"run": None, "outcome": "refused"})
+        with state.write_lock(self.ctx):
+            for call in (lambda: state.write_lock(self.ctx).__enter__(),
+                         lambda: logs.append_run(self.ctx, {"run": None, "outcome": "refused"}),
+                         lambda: logs.attention(self.ctx, "flood", "Zeus's inbox was flooded", None)):
+                with self.assertRaises(state.WriteBusy):
+                    call()
+            with state.lock(self.ctx):
+                pass
+        self.assertEqual(len(list(logs.iter_run_lines(self.ctx))), 1)
+        self.assertFalse((self.ctx.log / "attention.jsonl").exists())
 
 
 if __name__ == "__main__":
