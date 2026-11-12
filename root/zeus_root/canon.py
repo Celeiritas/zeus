@@ -31,6 +31,7 @@ ORIGIN_RE = re.compile(r"https://(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z
                        r":(?P<port>[1-9][0-9]{0,4})")
 CHECK_KEY = "check-key"
 MAX_SAFE_INT = 2 ** 53 - 1                          # the largest integer the page's JavaScript holds exactly
+MAX_DEPTH = 32                                      # objects and arrays inside each other; a record needs 4
 
 
 def canonical(obj):
@@ -58,16 +59,17 @@ def _finite(text):
     return x
 
 
-def _no_lone_surrogates(obj):
-    """"\\ud800" is valid JSON text but no valid string: refuse it here rather than at some later encode."""
-    stack = [obj]
+def _check_tree(obj):
+    """No nesting deeper than MAX_DEPTH (whatever this Python's parser would take), and no lone surrogate:
+    "\\ud800" is valid JSON text but no valid string, so it is refused here rather than at some later encode."""
+    stack = [(obj, 0)]
     while stack:
-        x = stack.pop()
-        if isinstance(x, dict):
-            stack.extend(x.keys())
-            stack.extend(x.values())
-        elif isinstance(x, list):
-            stack.extend(x)
+        x, depth = stack.pop()
+        if isinstance(x, (dict, list)):
+            if depth >= MAX_DEPTH:
+                raise Malformed("nested too deep")
+            items = list(x.keys()) + list(x.values()) if isinstance(x, dict) else x
+            stack.extend((y, depth + 1) for y in items)
         elif isinstance(x, str):
             try:
                 x.encode("utf-8")
@@ -77,7 +79,8 @@ def _no_lone_surrogates(obj):
 
 def strict_loads(data):
     """Parse JSON bytes strictly: UTF-8 without a BOM, no repeated keys (at any depth), no NaN or Infinity, no number
-    that overflows to infinity, no lone surrogate. Anything else raises Malformed; the message never quotes the input."""
+    that overflows to infinity, no lone surrogate, at most MAX_DEPTH levels. Anything else raises Malformed; the
+    message never quotes the input."""
     if not isinstance(data, (bytes, bytearray)):
         raise Malformed("not bytes")
     if bytes(data[:3]) == b"\xef\xbb\xbf":
@@ -89,7 +92,7 @@ def strict_loads(data):
         raise
     except (ValueError, RecursionError) as e:   # JSONDecodeError, UnicodeDecodeError, too many digits, too deep
         raise Malformed("not strict JSON (" + type(e).__name__ + ")") from None
-    _no_lone_surrogates(obj)
+    _check_tree(obj)
     return obj
 
 

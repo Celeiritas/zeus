@@ -38,6 +38,14 @@ class StrictTest(unittest.TestCase):
             with self.subTest(raw=raw[:20]), self.assertRaises(Malformed):
                 canon.strict_loads(raw)
 
+    def test_depth_limit_is_explicit(self):
+        """The limit is root's own, not whatever this Python's parser takes (3.14 parsed 5000 levels in CI)."""
+        canon.strict_loads(b'[' * 32 + b']' * 32)
+        canon.strict_loads(b'{"a":' * 31 + b'{}' + b'}' * 31)
+        for raw in (b'[' * 33 + b']' * 33, b'{"a":' * 32 + b'{}' + b'}' * 32, b'[' * 100 + b']' * 100):
+            with self.subTest(len=len(raw)), self.assertRaises(Malformed):
+                canon.strict_loads(raw)
+
     def test_strict_accepts_plain_object(self):
         self.assertEqual(canon.strict_loads(b'{"a":[1,"x",null,true]}'), {"a": [1, "x", None, True]})
 
