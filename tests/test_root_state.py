@@ -1,5 +1,6 @@
 """zeus-root: root's own state: spent nonces, counters, the pause, refusal counts, attention windows (D8), limits, the lock."""
 import contextlib
+import errno
 import hashlib
 import os
 import tempfile
@@ -29,6 +30,14 @@ class _Steps:
     def __getattr__(self, name):
         self._tick()
         return getattr(self._real, name)
+
+
+class _Posix:
+    """Stands in for os in state with os.name "posix", so the nonce lock takes its flock on Windows too."""
+    name = "posix"
+
+    def __getattr__(self, name):
+        return getattr(os, name)
 
 
 class StateCase(unittest.TestCase):
@@ -196,7 +205,7 @@ class NonceTest(StateCase):
             fcntl.flock(fd, fcntl.LOCK_EX)
             for call in (lambda: state.spend_nonce(self.ctx, NONCE), lambda: state.prune_nonces(self.ctx)):
                 start = time.monotonic()
-                with self.assertRaises(state.Busy):
+                with self.assertRaises(state.NonceBusy):
                     call()
                 self.assertLess(time.monotonic() - start, 2)
             self.assertEqual(list((self.ctx.lib / "nonces").iterdir()), [])
@@ -218,11 +227,68 @@ class NonceTest(StateCase):
 
     def test_a_folder_at_a_nonce_path_fails_closed(self):
         """Re-check of 1f44350, N2: something that is not a regular file at a nonce's path makes every spend raise,
-        never answer. Only root writes this folder, so this is robustness, not a gate's attack."""
+        never answer. Only root writes this folder, so this is robustness, not a gate's attack. It raises Broken, as
+        spend_nonce says, not the OSError of the open (re-check of 8704c4f, F1)."""
         self.nonce_file().mkdir()
         for exp in (None, int(self.t0) + 86400):
-            with self.subTest(exp=exp), self.assertRaises((state.Broken, OSError)):
+            with self.subTest(exp=exp), self.assertRaises(state.Broken):
                 state.spend_nonce(self.ctx, NONCE, exp)
+
+    def test_a_socket_or_a_link_at_a_nonce_path_is_broken(self):
+        """Re-check of 8704c4f, F1: a socket, a link to a regular file or a dangling link at a nonce's path makes a
+        spend raise Broken, not the OSError of the open, and the file a link points to keeps its time."""
+        root_support.need("linux")
+        import socket
+        target = self.ctx.lib / "elsewhere"
+        target.write_bytes(b"")
+        os.utime(target, (1, 1))
+        for kind in ("socket", "link", "dangling"):
+            with self.subTest(kind):
+                path = self.nonce_file()
+                if kind == "socket":
+                    s = socket.socket(socket.AF_UNIX)
+                    self.addCleanup(s.close)
+                    s.bind(str(path))
+                else:
+                    os.symlink(target if kind == "link" else self.ctx.lib / "missing", path)
+                for exp in (None, int(self.t0) + 86400):
+                    with self.assertRaises(state.Broken):
+                        state.spend_nonce(self.ctx, NONCE, exp)
+                os.unlink(path)
+        self.assertEqual(os.stat(target).st_mtime, 1)
+
+    def test_another_error_opening_a_spent_nonce_is_raised_as_it_is(self):
+        """Re-check of 8704c4f, F1: an open of a spent nonce's regular file that fails for another reason (out of file
+        handles) raises that OSError, not Broken: Broken says the store holds something root never wrote there."""
+        self.assertTrue(state.spend_nonce(self.ctx, NONCE))
+        real, path = os.open, str(self.nonce_file())
+
+        def opener(p, *a, **kw):
+            if str(p) == path:
+                raise OSError(errno.EMFILE, "too many open files")
+            return real(p, *a, **kw)
+        with mock.patch.object(state.os, "open", opener), self.assertRaises(OSError) as cm:
+            state.spend_nonce(self.ctx, NONCE)
+        self.assertEqual(cm.exception.errno, errno.EMFILE)
+
+    def test_only_the_nonce_lock_says_nonce_busy(self):
+        """Re-check of 8704c4f, F2: a nonce lock that is not free makes a spend and a prune raise NonceBusy, a Busy;
+        lib/lock raises a plain Busy. So the runner can stop on any Busy and still tell a spend that could not run from
+        a record it refused busy at the lock (Z2b). A stand-in flock that is never free, so this runs on Windows too."""
+        def never_free(fd, op):
+            raise BlockingIOError
+        self.ctx.lock_wait_s = 0
+        self.assertTrue(issubclass(state.NonceBusy, state.Busy))
+        with mock.patch.dict("sys.modules", {"fcntl": SimpleNamespace(LOCK_EX=2, LOCK_NB=4, flock=never_free)}), \
+                mock.patch.object(state, "os", _Posix()):
+            for call in (lambda: state.spend_nonce(self.ctx, NONCE), lambda: state.prune_nonces(self.ctx)):
+                with self.subTest(call=call), self.assertRaises(state.NonceBusy):
+                    call()
+            with self.assertRaises(state.Busy) as cm:
+                with state.lock(self.ctx):
+                    pass
+            self.assertNotIsInstance(cm.exception, state.NonceBusy)
+        self.assertEqual(list((self.ctx.lib / "nonces").iterdir()), [])
 
     def test_a_fifo_at_a_nonce_path_never_blocks_a_spend(self):
         """Re-check of 1f44350, N2: a FIFO at a nonce's path, with or without a reader, makes a spend raise at once:
@@ -243,7 +309,7 @@ class NonceTest(StateCase):
                 for exp in (None, int(self.t0) + 86400):
                     with self.subTest(reader=reader, exp=exp):
                         signal.alarm(5)
-                        with self.assertRaises(state.Broken if reader else (state.Broken, OSError)):
+                        with self.assertRaises(state.Broken):
                             state.spend_nonce(self.ctx, NONCE, exp)
                         signal.alarm(0)
             finally:
@@ -416,9 +482,10 @@ class FilesTest(StateCase):
         self.ctx.lock_wait_s = 0.2
         with state.lock(self.ctx):
             start = time.monotonic()
-            with self.assertRaises(state.Busy):
+            with self.assertRaises(state.Busy) as cm:
                 with state.lock(self.ctx):
                     pass
+            self.assertNotIsInstance(cm.exception, state.NonceBusy)
             self.assertLess(time.monotonic() - start, 2)
         with state.lock(self.ctx):
             pass

@@ -35,7 +35,13 @@ class Broken(Exception):
 
 
 class Busy(Exception):
-    """Another start held the lock (or another call the nonce lock) for longer than ctx.lock_wait_s."""
+    """Another start held lib/lock for longer than ctx.lock_wait_s (or, as NonceBusy, another call the nonce lock)."""
+
+
+class NonceBusy(Busy):
+    """Another call held the nonce lock for longer than ctx.lock_wait_s; only a spend or a prune raises it, never
+    lib/lock. A Busy, so a caller that stops on any Busy still stops; but a record whose spend raised it was not refused
+    busy at lib/lock (Z2b): the runner writes no result for it and does not answer it again (re-check of 8704c4f, F2)."""
 
 
 def _fsync_dir(folder):
@@ -149,9 +155,10 @@ def spend_nonce(ctx, nonce, exp=None):
     Every spend holds the nonce lock, the runner's for a record refused busy at lib/lock (Z2b) too, so no other spend
     or prune changes the file between its fstat and its stamp. A new nonce file still gets its time under a temporary
     name and is then linked into place, so a crash never leaves it without that time, and the folder is fsynced before
-    any answer, False too (re-check of 1f44350, N3). Raises Busy when the nonce lock is not free within
-    ctx.lock_wait_s, and Broken when something other than a regular file is at the nonce's path: the caller writes no
-    result either way."""
+    any answer, False too (re-check of 1f44350, N3). Raises NonceBusy (a Busy) when the nonce lock is not free within
+    ctx.lock_wait_s, Broken when something other than a regular file is at the nonce's path (a folder, a FIFO, a
+    socket, a link), and any other OSError as it is (out of file handles, say): the caller writes no result for any of
+    them (re-check of 8704c4f, F1 and F2)."""
     path = _nonce_path(ctx, nonce)
     with _nonce_lock(ctx):
         now = ctx.now()
@@ -177,8 +184,15 @@ def spend_nonce(ctx, nonce, exp=None):
 def _keep_until(path, t):
     """Move a spent nonce's file time forward to t, never back; the caller holds the nonce lock, so nothing changes the
     time between the fstat and the stamp. The file is opened without blocking and must be a regular file, else Broken:
-    a FIFO there would otherwise block the spend for ever with both locks held (re-check of 1f44350, N2)."""
-    fd = os.open(path, os.O_WRONLY | _NOFOLLOW | _CLOEXEC | _NONBLOCK)
+    a FIFO there would otherwise block the spend for ever with both locks held (re-check of 1f44350, N2). An open that
+    fails because something else is there (a folder, a FIFO without a reader, a socket, a link) is Broken too; any
+    other OSError is raised as it is (re-check of 8704c4f, F1)."""
+    try:
+        fd = os.open(path, os.O_WRONLY | _NOFOLLOW | _CLOEXEC | _NONBLOCK)
+    except OSError as e:
+        if not _regular(path):
+            raise Broken("a nonce path is not a regular file") from e
+        raise
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
@@ -191,6 +205,14 @@ def _keep_until(path, t):
         _stamp(path, fd, t)
     else:
         os.close(fd)
+
+
+def _regular(path):
+    """Whether path itself, never what a link there points to, is a regular file (False when it cannot be looked at)."""
+    try:
+        return stat.S_ISREG(os.lstat(path).st_mode)
+    except OSError:
+        return False
 
 
 def prune_nonces(ctx):
@@ -337,9 +359,9 @@ def note_run(ctx, action_id):
 
 # --- the lock ------------------------------------------------------------------------------------------------------
 
-def _flock(ctx, name, why):
-    """Open lib/<name> and take its flock, waiting at most ctx.lock_wait_s, then raise Busy(why); returns the fd, whose
-    close releases the lock."""
+def _flock(ctx, name, why, busy=Busy):
+    """Open lib/<name> and take its flock, waiting at most ctx.lock_wait_s, then raise busy(why) (Busy, or NonceBusy for
+    the nonce lock); returns the fd, whose close releases the lock."""
     import fcntl
     fd = os.open(ctx.lib / name, os.O_RDWR | os.O_CREAT | _NOFOLLOW | _CLOEXEC, 0o600)
     try:
@@ -350,7 +372,7 @@ def _flock(ctx, name, why):
                 return fd
             except BlockingIOError:
                 if time.monotonic() >= deadline:
-                    raise Busy(why) from None
+                    raise busy(why) from None
                 time.sleep(0.05)
     except BaseException:
         os.close(fd)
@@ -371,11 +393,12 @@ def lock(ctx):
 def _nonce_lock(ctx):
     """Hold lib/nonce-lock (flock) for one spend or one prune: a few file operations, never a whole start, so the
     runner's spend for a record refused busy at lib/lock (Z2b) takes it too. Taken after lib/lock, never before it.
-    Windows (tests only) has no flock: there it holds nothing."""
+    Raises NonceBusy, never a plain Busy, so the runner can tell it from lib/lock's. Windows (tests only) has no flock:
+    there it holds nothing."""
     if os.name != "posix":
         yield
         return
-    fd = _flock(ctx, NONCE_LOCK, "another call holds the nonce lock")
+    fd = _flock(ctx, NONCE_LOCK, "another call holds the nonce lock", NonceBusy)
     try:
         yield
     finally:

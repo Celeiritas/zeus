@@ -215,7 +215,9 @@ def verify(rec, keys, cfg, list_sha, now, counter, spend):
     whose exp was too far ahead (0.8.1 re-check, finding 2; re-check of de22580, finding 1). Not covered: a record
     whose exp is more than a day ahead that root refused only before its signature while it kept the nonce keeps the
     nonce one day only; the key page's exp check stops that case (module docstring). An error raised by spend itself
-    is raised as it is, and spend is not called a second time. Returns Verified; raises Refusal or Malformed."""
+    (state.NonceBusy, state.Broken, an OSError) is raised as it is, in place of any Refusal or Malformed on its way
+    out, and spend is not called a second time: the runner writes no result for that record, and a NonceBusy is not
+    the runner's busy refusal at the lock. Returns Verified; raises Refusal or Malformed."""
     nonce = rec.get("nonce") if isinstance(rec, dict) else None
     if not canon.valid_nonce(nonce):
         raise canon.Malformed("no well-formed nonce")
