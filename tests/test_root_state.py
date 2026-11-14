@@ -498,6 +498,69 @@ class LimitTest(StateCase):
         self.assertIsNone(state.limit_reason(self.ctx, entry))
 
 
+class ClockAheadTest(StateCase):
+    """Root's clock ran a day ahead, then was set right (re-check notes, item 1). A counting window takes a time later
+    than now as now and writes it back, so the correction holds it at most the window's length; a line window takes it
+    as long ago, so its line is written (one too many, never none)."""
+    AHEAD = 86400
+
+    def test_the_hourly_cap_holds_an_hour_after_the_correction(self):
+        self.at(self.AHEAD)
+        self.assertTrue(state.open_slot(self.ctx, 2))
+        self.assertTrue(state.open_slot(self.ctx, 2))
+        self.at(0)
+        self.assertFalse(state.open_slot(self.ctx, 2))      # the two slots count as now
+        self.at(3599)
+        self.assertFalse(state.open_slot(self.ctx, 2))
+        self.at(3600)                                       # an hour after the correction, not a day and an hour
+        self.assertTrue(state.open_slot(self.ctx, 2))
+
+    def test_counted_refusals_hold_an_hour_after_the_correction(self):
+        self.at(self.AHEAD)
+        state.count_refusal(self.ctx, "counted")
+        state.count_refusal(self.ctx, "counted")
+        self.at(0)
+        self.assertEqual(state.refusals_in_hour(self.ctx, "counted"), 2)
+        self.assertEqual(state.count_refusal(self.ctx, "counted"), 3)
+        self.at(3600)
+        self.assertEqual(state.count_refusal(self.ctx, "counted"), 1)
+
+    def test_action_limits_hold_a_window_after_the_correction(self):
+        entry = SimpleNamespace(id="close-media-lan", max_per_day=1, min_gap_s=120)
+        self.at(self.AHEAD)
+        state.note_run(self.ctx, entry.id)
+        self.at(0)
+        self.assertEqual(state.limit_reason(self.ctx, entry), "max-per-day")    # the run counts as now
+        self.at(self.AHEAD - 1)
+        self.assertEqual(state.limit_reason(self.ctx, entry), "max-per-day")
+        self.at(self.AHEAD)                                 # a day after the correction
+        self.assertIsNone(state.limit_reason(self.ctx, entry))
+        gap = SimpleNamespace(id="restart-bluetooth", max_per_day=6, min_gap_s=120)
+        self.at(2 * self.AHEAD)
+        state.note_run(self.ctx, gap.id)
+        self.at(self.AHEAD)
+        self.assertEqual(state.limit_reason(self.ctx, gap), "min-gap")
+        self.at(self.AHEAD + 120)
+        self.assertIsNone(state.limit_reason(self.ctx, gap))
+
+    def test_a_flood_line_seen_ahead_does_not_hide_the_next(self):
+        self.at(self.AHEAD)
+        self.assertTrue(state.flood_seen(self.ctx))
+        self.at(0)
+        self.assertTrue(state.flood_seen(self.ctx))         # long ago, not within the hour
+        self.at(10)
+        self.assertFalse(state.flood_seen(self.ctx))
+
+    def test_an_attention_window_seen_ahead_writes_the_next_line(self):
+        self.at(self.AHEAD)
+        self.assertEqual(state.attention_slot(self.ctx, "file-rules"), (True, 0))
+        self.assertEqual(state.attention_slot(self.ctx, "file-rules"), (False, 1))
+        self.at(0)
+        self.assertEqual(state.attention_slot(self.ctx, "file-rules"), (True, 1))
+        self.at(10)
+        self.assertEqual(state.attention_slot(self.ctx, "file-rules"), (False, 1))
+
+
 class FilesTest(StateCase):
     def test_files_are_600_and_no_temporary_left(self):
         root_support.need("linux")

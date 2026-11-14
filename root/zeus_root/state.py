@@ -308,6 +308,22 @@ def clear_pause(ctx):
         _fsync_dir(ctx.lib)
 
 
+# --- counting windows ----------------------------------------------------------------------------------------------
+# The hourly cap, the refusal counts and the per-action limits count times within a window. A time later than now (root's
+# clock ran ahead and was set right) counts as now, and every caller that holds the file's lock writes it back as now,
+# so a correction holds a window at most its own length: a time left in the future would hold it until the clock caught
+# up with it, a day or a year later (re-check notes, item 1). The pause's end is not a window: a timed pause set while
+# the clock ran ahead lasts until that end, and the owner's resume (clear_pause) ends it.
+
+def _recent(ts, now, span):
+    """The times within the last span seconds, a time later than now counted as now."""
+    return [u for u in (min(t, now) for t in ts) if now - u < span]
+
+
+def _ahead(ts, now):
+    return any(t > now for t in ts)
+
+
 # --- refusal counts ------------------------------------------------------------------------------------------------
 
 def count_refusal(ctx, cls):
@@ -318,7 +334,7 @@ def count_refusal(ctx, cls):
     data = _read(ctx, "refusals.json") or {}
     kept = {}
     for c, ts in data.items():
-        recent = [t for t in _times(ts, "refusals.json") if now - t < HOUR_S]
+        recent = _recent(_times(ts, "refusals.json"), now, HOUR_S)
         if recent:
             kept[c] = recent
     kept[cls] = (kept.get(cls, []) + [now])[-MAX_KEPT:]
@@ -327,10 +343,11 @@ def count_refusal(ctx, cls):
 
 
 def refusals_in_hour(ctx, cls):
-    """How many refusals of a class fell within the last hour (read only; at most MAX_KEPT)."""
+    """How many refusals of a class fell within the last hour (read only, so a time later than now is not written
+    back here: the next count_refusal does that; at most MAX_KEPT)."""
     now = ctx.now()
     ts = (_read(ctx, "refusals.json") or {}).get(cls, [])
-    return len([t for t in _times(ts, "refusals.json") if now - t < HOUR_S])
+    return len(_recent(_times(ts, "refusals.json"), now, HOUR_S))
 
 
 # --- the hourly cap and the flood (review M1, N2) -----------------------------------------------------------------
@@ -343,9 +360,11 @@ def open_slot(ctx, per_hour):
         raise ValueError("per_hour is a whole number from 1")
     with write_lock(ctx):
         now = ctx.now()
-        recent = [t for t in _times((_read(ctx, "opened.json") or {}).get("times", []), "opened.json")
-                  if now - t < HOUR_S]
+        times = _times((_read(ctx, "opened.json") or {}).get("times", []), "opened.json")
+        recent = _recent(times, now, HOUR_S)
         if len(recent) >= per_hour:
+            if _ahead(times, now):
+                _save(ctx, "opened.json", {"times": recent[-per_hour:]})
             return False
         _save(ctx, "opened.json", {"times": (recent + [now])[-per_hour:]})
         return True
@@ -353,19 +372,22 @@ def open_slot(ctx, per_hour):
 
 def flood_seen(ctx):
     """Note a flood now (the caller holds lib/lock); True when none was seen within the hour before, so this flood
-    writes its line: one line for a flood that lasts, whatever pause is on."""
+    writes its line: one line for a flood that lasts, whatever pause is on. A last flood later than now (root's clock
+    ran ahead and was set right) counts as long ago: one line too many, never none (re-check notes, item 1)."""
     now = ctx.now()
     data = _read(ctx, "flood.json")
     last = None if data is None else _number(data.get("last"), "flood.json")
     _save(ctx, "flood.json", {"last": now})
-    return last is None or now - last >= HOUR_S
+    return last is None or last > now or now - last >= HOUR_S
 
 
 # --- attention windows (D8) ----------------------------------------------------------------------------------------
 
 def attention_slot(ctx, kind):
     """(write_now, folded). For file-rules and watcher-failed the first in an hour writes its line and carries the count
-    of those folded since the last line; later ones in that hour write none and add 1. Every other kind always writes."""
+    of those folded since the last line; later ones in that hour write none and add 1. Every other kind always writes.
+    A last line later than now (root's clock ran ahead and was set right) counts as long ago: the next one is written
+    (re-check notes, item 1)."""
     if kind not in WINDOWED:
         return True, 0
     now = ctx.now()
@@ -375,7 +397,7 @@ def attention_slot(ctx, kind):
         if not isinstance(entry, dict) or type(entry.get("folded")) is not int or entry["folded"] < 0:
             raise Broken("attention.json: bad entry")
         last = _number(entry.get("last"), "attention.json")
-    if entry is None or now - last >= HOUR_S:
+    if entry is None or last > now or now - last >= HOUR_S:
         folded = 0 if entry is None else entry["folded"]
         data[kind] = {"folded": 0, "last": now}
         _save(ctx, "attention.json", data)
@@ -387,20 +409,28 @@ def attention_slot(ctx, kind):
 
 # --- per-action limits ---------------------------------------------------------------------------------------------
 
-def _runs(ctx, action_id):
-    entry = (_read(ctx, "runs.json") or {}).get(_action_id(action_id))
+def _runs(ctx, action_id, now):
+    """(runs.json, the action's runs within the last day, its last run or None), a time later than now counted as now
+    and written back as now (the caller holds lib/lock)."""
+    data = _read(ctx, "runs.json") or {}
+    entry = data.get(_action_id(action_id))
     if entry is None:
-        return [], None
+        return data, [], None
     if not isinstance(entry, dict):
         raise Broken("runs.json: bad entry")
-    return _times(entry.get("day"), "runs.json"), _number(entry.get("last"), "runs.json")
+    day, last = _times(entry.get("day"), "runs.json"), _number(entry.get("last"), "runs.json")
+    recent = _recent(day, now, DAY_S)
+    if last > now or _ahead(day, now):
+        data[action_id] = {"day": recent, "last": min(last, now)}
+        _save(ctx, "runs.json", data)
+    return data, recent, min(last, now)
 
 
 def limit_reason(ctx, entry):
     """None when the action may run now, else "max-per-day" or "min-gap" (entry: id, max_per_day, min_gap_s)."""
     now = ctx.now()
-    day, last = _runs(ctx, entry.id)
-    if len([t for t in day if now - t < DAY_S]) >= entry.max_per_day:
+    _, day, last = _runs(ctx, entry.id, now)
+    if len(day) >= entry.max_per_day:
         return "max-per-day"
     if last is not None and now - last < entry.min_gap_s:
         return "min-gap"
@@ -410,9 +440,8 @@ def limit_reason(ctx, entry):
 def note_run(ctx, action_id):
     """Count one run of an action now (the last time is kept apart, so a gap longer than a day still holds)."""
     now = ctx.now()
-    data = _read(ctx, "runs.json") or {}
-    day, _ = _runs(ctx, action_id)
-    data[action_id] = {"day": [t for t in day if now - t < DAY_S] + [now], "last": now}
+    data, day, _ = _runs(ctx, action_id, now)
+    data[action_id] = {"day": day + [now], "last": now}
     _save(ctx, "runs.json", data)
 
 
