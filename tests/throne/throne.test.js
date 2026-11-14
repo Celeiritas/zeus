@@ -41,9 +41,9 @@ run(async b => {
   await p.goto(BASE + 'home'); await p.waitForTimeout(800);
   check(/Review 2 deploys/.test(await p.locator('.home').textContent()), 'Home: Needs you says the Throne has deploys to review');
   await p.goto(BASE + 'throne'); await p.locator('.throne').waitFor();
-  // Elaia names the page (Throne before her 4.34 shell, Approvals since); nothing answers argus-ui's health here, so the line
+  // Elaia names the page (Throne before her 4.34 shell, Approvals since, Zeus since argus-ui 4.45.0); nothing answers argus-ui's health here, so the line
   // says Zeus's own last deploy, "deployed", never "live" (0.7.0)
-  check(['Throne', 'Approvals'].includes(await p.locator('.title h1').textContent()) && /2 deploys waiting · argus-ui 4.8.0 deployed/.test(await p.locator('#tstatus').textContent()), 'a side page titled by Elaia; the status line says what waits and what Zeus deployed');
+  check(['Throne', 'Approvals', 'Zeus'].includes(await p.locator('.title h1').textContent()) && /2 deploys waiting · argus-ui 4.8.0 deployed/.test(await p.locator('#tstatus').textContent()), 'a side page titled by Elaia; the status line says what waits and what Zeus deployed');
   const t = p.locator('.tablet[data-id="20261023-090000-argus-ui-aaaaaaa"]'), txt = await t.textContent();
   for (const [what, re] of [['repository and version', /argus-ui\s*4\.9\.0/], ['subject', /Mentor: Learn phase/], ['commit', /aaaaaaa/], ['changelog', /A hint ladder/],
     ['checks', /checks passed/], ['files', /12 files changed/], ['expiry', /expires in (47 h|2 d)/]]) check(re.test(txt), `a request card shows the ${what}`);

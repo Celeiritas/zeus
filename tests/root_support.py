@@ -171,3 +171,93 @@ def good_tree(ctx):
         modes[p] = 0o755
     for p, m in modes.items():
         os.chmod(p, m)
+
+
+FLAGS_OK = 0x01 | 0x04 | 0x08 | 0x10    # UP, UV, BE, BS: a synced passkey confirmed with the fingerprint
+SERVE_STATUS = ("/usr/bin/tailscale", "serve", "status", "--json")
+SERVE_PREFS = ("/usr/bin/tailscale", "debug", "prefs")
+SERVE_PID = ("/usr/bin/systemctl", "show", "tailscaled.service", "-p", "MainPID", "--value")
+TAILSCALED_PID = "4100"
+
+
+def serve_status(cfg, **over):
+    """What `tailscale serve status --json` prints when the key page is mapped exactly as root installed it."""
+    hostport = "%s:%d" % (cfg["rp_id"], cfg["keyport"])
+    doc = {"TCP": {str(cfg["keyport"]): {"HTTPS": True}},
+           "Web": {hostport: {"Handlers": {"/": {"Path": cfg["page_dir"]},
+                                           "/api": {"Proxy": "http://127.0.0.1:%d" % cfg["gateport"]}}}}}
+    doc.update(over)
+    return doc
+
+
+def serve_ok(ctx, cfg, status=None, operator="", environ=b"PATH=/usr/sbin:/usr/bin\0PORT=41641\0"):
+    """Make ctx.cmd (a FakeCmd) answer the reads of serve.problem, and ctx.proc hold tailscaled's process (its name
+    and its environment, no command line, so the game check never matches it); status None = the installed
+    mapping."""
+    import json
+    from zeus_root.ctx import CmdResult
+    ctx.cmd.answers[SERVE_STATUS] = CmdResult(0, json.dumps(serve_status(cfg) if status is None else status), "")
+    ctx.cmd.answers[SERVE_PREFS] = CmdResult(0, json.dumps({"OperatorUser": operator, "WantRunning": True}), "")
+    ctx.cmd.answers[SERVE_PID] = CmdResult(0, TAILSCALED_PID + "\n", "")
+    folder = ctx.proc / TAILSCALED_PID
+    folder.mkdir(exist_ok=True)
+    (folder / "comm").write_bytes(b"tailscaled\n")
+    (folder / "environ").write_bytes(environ)
+
+
+class Phone:
+    """A passkey registered in ctx's keys.json for one action, on one device, that signs records the way the key page
+    and Android will: root's challenge from the installed list and config, an ES256 signature over
+    authenticatorData || SHA-256(clientDataJSON). counting=True makes each record's sign counter one higher."""
+
+    def __init__(self, ctx, action="restart-bluetooth", counting=False, node_id="nTEST1CNTRL",
+                 login="owner@example.com", register=True):
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from zeus_root import canon, config
+        self.ctx, self.counting, self.count = ctx, counting, 0
+        self.priv = ec.generate_private_key(ec.SECP256R1())
+        spki = self.priv.public_key().public_bytes(serialization.Encoding.DER,
+                                                   serialization.PublicFormat.SubjectPublicKeyInfo)
+        cid = os.urandom(32)
+        self.key = make_key(action=action, id=cid, ref=canon.key_ref(cid), spki=spki, node_id=node_id, login=login)
+        if register:
+            keys = config.load_keys(ctx)
+            keys[self.key.ref] = self.key
+            config.save_keys(ctx, keys)
+
+    def record(self, action=None, nonce=None, exp=None, params=None, list_sha=None, count=None, flags=FLAGS_OK,
+               bad_sig=False, seen=None, origin=None):
+        import hashlib
+        import json
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from zeus_root import canon, config
+        cfg = config.load_config(self.ctx)
+        if list_sha is None:
+            list_sha = config.load_actions(self.ctx)[1]
+        action = action or self.key.action
+        params = ({"key": self.key.ref} if action == canon.CHECK_KEY else {}) if params is None else params
+        nonce = nonce or canon.b64u_encode(os.urandom(32))
+        exp = int(self.ctx.now()) + 120 if exp is None else exp
+        ch = canon.challenge(action, params, list_sha, nonce, exp, origin or cfg.origin)
+        client = json.dumps({"type": "webauthn.get", "challenge": canon.b64u_encode(ch),
+                             "origin": origin or cfg.origin, "crossOrigin": False}, separators=(",", ":")).encode()
+        if count is None:
+            self.count += 1 if self.counting else 0
+            count = self.count
+        auth = hashlib.sha256(cfg.rp_id.encode()).digest() + bytes([flags]) + count.to_bytes(4, "big")
+        sig = self.priv.sign(auth + hashlib.sha256(client).digest(), ec.ECDSA(hashes.SHA256()))
+        if bad_sig:
+            sig = sig[:-1] + bytes([sig[-1] ^ 1])
+        return {"type": "check-key" if action == canon.CHECK_KEY else "run", "action": action, "params": params,
+                "list": list_sha, "nonce": nonce, "exp": exp, "credentialId": canon.b64u_encode(self.key.id),
+                "clientDataJSON": canon.b64u_encode(client), "authenticatorData": canon.b64u_encode(auth),
+                "signature": canon.b64u_encode(sig), "userHandle": canon.b64u_encode(self.key.user),
+                "seen": dict({"login": self.key.login, "node": "phone", "node_id": self.key.node_id,
+                              "ip": "192.0.2.9"}, **(seen or {}))}
+
+    def check_in(self, run, **seen):
+        return {"type": "reach", "run": run,
+                "seen": dict({"login": self.key.login, "node": "phone", "node_id": self.key.node_id,
+                              "ip": "192.0.2.9"}, **seen)}

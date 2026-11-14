@@ -1,9 +1,13 @@
 """Root's own state under ctx.lib (/var/lib/zeus-root): spent nonces, signature counters, the pause, refusal counts,
-attention windows (D8), per-action limits, and the lock every start takes.
+attention windows (D8), the hourly cap on inbox entries opened and the last flood seen, per-action limits, and the lock
+every start takes.
 
 Callers hold lock(ctx) around every read-modify-write here (the runner for a whole start, the command line for one
 change). The nonce store also has a short lock of its own, which every spend and every prune takes, so the one call
-without lock(ctx), the runner's spend for a record refused busy at it (Z2b), never interleaves with another. Each state
+without lock(ctx), the runner's spend for a record refused busy at it (Z2b), never interleaves with another. The
+readable files of logs.py (the run log's chain, the results, the attention lines and attention.json) and the hourly
+cap (opened.json) have a third short lock, write_lock(ctx), so the busy start's lines and slots never interleave with
+those of the start that holds lib/lock. Each state
 file is written to a temporary name in its own folder, flushed and renamed into place, mode 600; a new nonce file is
 linked into place from its temporary name instead, so it never replaces one that is there. A state file that doesn't
 read back raises Broken, and the caller stops instead of guessing (fail closed). Times come from ctx.now(); only the
@@ -22,7 +26,9 @@ from . import canon
 HOUR_S = 3600
 DAY_S = 86400
 NONCE_KEEP_LIMIT = 2 ** 32             # no nonce file time past 2106-02-07 (a record expiring later is never fresh before)
-NONCE_LOCK = "nonce-lock"              # lib/nonce-lock: beside lib/lock, outside nonces/ so a prune never sees it
+NONCE_LOCK = "nonce-lock"
+BUSY_LOCK = "busy-lock"              # lib/nonce-lock: beside lib/lock, outside nonces/ so a prune never sees it
+WRITE_LOCK = "write-lock"              # lib/write-lock: one append to the run log, one result, one attention line
 WINDOWED = ("file-rules", "watcher-failed")   # D8: one line an hour; later ones are folded into the next line
 MAX_KEPT = 100                                 # refusal times kept per class: enough for any "3 in an hour"
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -36,6 +42,11 @@ class Broken(Exception):
 
 class Busy(Exception):
     """Another start held lib/lock for longer than ctx.lock_wait_s (or, as NonceBusy, another call the nonce lock)."""
+
+
+class WriteBusy(Busy):
+    """Another call held lib/write-lock for longer than ctx.lock_wait_s (a few file operations normally): never the
+    runner's busy refusal at lib/lock."""
 
 
 class NonceBusy(Busy):
@@ -232,22 +243,36 @@ def prune_nonces(ctx):
 
 # --- signature counters --------------------------------------------------------------------------------------------
 
-def get_counter(ctx, ref):
-    """The last signature counter seen for a key, or None before its first use."""
+def key_state(ctx, ref):
+    """(the last signature counter seen for a key, the signed exp of the last record accepted with it), each None
+    before its first use; an entry written before 0.8.2 has no exp (None)."""
     entry = (_read(ctx, "counters.json") or {}).get(_ref(ref))
     if entry is None:
-        return None
+        return None, None
     n = entry.get("count") if isinstance(entry, dict) else None
-    if type(n) is not int:
+    exp = entry.get("exp") if isinstance(entry, dict) else None
+    if type(n) is not int or (exp is not None and type(exp) is not int):
         raise Broken("counters.json: bad entry")
-    return n
+    return n, exp
 
 
-def set_counter(ctx, ref, n, bs):
+def get_counter(ctx, ref):
+    """The last signature counter seen for a key, or None before its first use."""
+    return key_state(ctx, ref)[0]
+
+
+def set_counter(ctx, ref, n, bs, exp=None):
+    """Store a key's counter and BE-backed-up flag after a record it signed was accepted, and that record's signed exp
+    (plan v6, item 13: an older record of the same key is refused before the counter check). An exp never moves back."""
     if type(n) is not int or not 0 <= n <= 0xFFFFFFFF or type(bs) is not bool:
         raise ValueError("a counter is 0..2**32-1 and bs a bool")
+    if exp is not None and type(exp) is not int:
+        raise ValueError("exp is an int or None")
     data = _read(ctx, "counters.json") or {}
-    data[_ref(ref)] = {"bs": bs, "count": n, "t": ctx.now()}
+    _, old = key_state(ctx, ref)
+    if old is not None and (exp is None or exp < old):
+        exp = old
+    data[_ref(ref)] = {"bs": bs, "count": n, "exp": exp, "t": ctx.now()}
     _save(ctx, "counters.json", data)
 
 
@@ -284,6 +309,22 @@ def clear_pause(ctx):
         _fsync_dir(ctx.lib)
 
 
+# --- counting windows ----------------------------------------------------------------------------------------------
+# The hourly cap, the refusal counts and the per-action limits count times within a window. A time later than now (root's
+# clock ran ahead and was set right) counts as now, and every caller that holds the file's lock writes it back as now,
+# so a correction holds a window at most its own length: a time left in the future would hold it until the clock caught
+# up with it, a day or a year later (re-check notes, item 1). The pause's end is not a window: a timed pause set while
+# the clock ran ahead lasts until that end, and the owner's resume (clear_pause) ends it.
+
+def _recent(ts, now, span):
+    """The times within the last span seconds, a time later than now counted as now."""
+    return [u for u in (min(t, now) for t in ts) if now - u < span]
+
+
+def _ahead(ts, now):
+    return any(t > now for t in ts)
+
+
 # --- refusal counts ------------------------------------------------------------------------------------------------
 
 def count_refusal(ctx, cls):
@@ -294,7 +335,7 @@ def count_refusal(ctx, cls):
     data = _read(ctx, "refusals.json") or {}
     kept = {}
     for c, ts in data.items():
-        recent = [t for t in _times(ts, "refusals.json") if now - t < HOUR_S]
+        recent = _recent(_times(ts, "refusals.json"), now, HOUR_S)
         if recent:
             kept[c] = recent
     kept[cls] = (kept.get(cls, []) + [now])[-MAX_KEPT:]
@@ -302,11 +343,57 @@ def count_refusal(ctx, cls):
     return len(kept[cls])
 
 
+def refusals_in_hour(ctx, cls):
+    """How many refusals of a class fell within the last hour (read only, so a time later than now is not written
+    back here: the next count_refusal does that; at most MAX_KEPT)."""
+    now = ctx.now()
+    ts = (_read(ctx, "refusals.json") or {}).get(cls, [])
+    return len(_recent(_times(ts, "refusals.json"), now, HOUR_S))
+
+
+# --- the hourly cap and the flood (review M1, N2) -----------------------------------------------------------------
+
+def open_slot(ctx, per_hour):
+    """Take one of the hour's per_hour slots for opening an inbox entry: True, and the slot is noted; False when the
+    last hour already holds per_hour (nothing noted). Under write_lock, so a start that found lib/lock busy shares the
+    count with the start that holds it. opened.json keeps at most per_hour times."""
+    if type(per_hour) is not int or per_hour < 1:
+        raise ValueError("per_hour is a whole number from 1")
+    with write_lock(ctx):
+        now = ctx.now()
+        times = _times((_read(ctx, "opened.json") or {}).get("times", []), "opened.json")
+        recent = _recent(times, now, HOUR_S)
+        if len(recent) >= per_hour:
+            if _ahead(times, now):
+                _save(ctx, "opened.json", {"times": recent[-per_hour:]})
+            return False
+        _save(ctx, "opened.json", {"times": (recent + [now])[-per_hour:]})
+        return True
+
+
+def flood_new(ctx):
+    """True when no flood was noted within the hour before now (read only), so this flood writes its line: one line
+    for a flood that lasts, whatever pause is on. A last flood later than now (root's clock ran ahead and was set
+    right) counts as long ago: one line too many, never none (re-check notes, item 1)."""
+    now = ctx.now()
+    data = _read(ctx, "flood.json")
+    last = None if data is None else _number(data.get("last"), "flood.json")
+    return last is None or last > now or now - last >= HOUR_S
+
+
+def note_flood(ctx):
+    """Note a flood now (the caller holds lib/lock). The runner notes it after its line is written, so a line that
+    failed to write (a full disk) comes at the next start that sees a flood (re-check notes, item 3)."""
+    _save(ctx, "flood.json", {"last": ctx.now()})
+
+
 # --- attention windows (D8) ----------------------------------------------------------------------------------------
 
 def attention_slot(ctx, kind):
     """(write_now, folded). For file-rules and watcher-failed the first in an hour writes its line and carries the count
-    of those folded since the last line; later ones in that hour write none and add 1. Every other kind always writes."""
+    of those folded since the last line; later ones in that hour write none and add 1. Every other kind always writes.
+    A last line later than now (root's clock ran ahead and was set right) counts as long ago: the next one is written
+    (re-check notes, item 1)."""
     if kind not in WINDOWED:
         return True, 0
     now = ctx.now()
@@ -316,7 +403,7 @@ def attention_slot(ctx, kind):
         if not isinstance(entry, dict) or type(entry.get("folded")) is not int or entry["folded"] < 0:
             raise Broken("attention.json: bad entry")
         last = _number(entry.get("last"), "attention.json")
-    if entry is None or now - last >= HOUR_S:
+    if entry is None or last > now or now - last >= HOUR_S:
         folded = 0 if entry is None else entry["folded"]
         data[kind] = {"folded": 0, "last": now}
         _save(ctx, "attention.json", data)
@@ -328,20 +415,28 @@ def attention_slot(ctx, kind):
 
 # --- per-action limits ---------------------------------------------------------------------------------------------
 
-def _runs(ctx, action_id):
-    entry = (_read(ctx, "runs.json") or {}).get(_action_id(action_id))
+def _runs(ctx, action_id, now):
+    """(runs.json, the action's runs within the last day, its last run or None), a time later than now counted as now
+    and written back as now (the caller holds lib/lock)."""
+    data = _read(ctx, "runs.json") or {}
+    entry = data.get(_action_id(action_id))
     if entry is None:
-        return [], None
+        return data, [], None
     if not isinstance(entry, dict):
         raise Broken("runs.json: bad entry")
-    return _times(entry.get("day"), "runs.json"), _number(entry.get("last"), "runs.json")
+    day, last = _times(entry.get("day"), "runs.json"), _number(entry.get("last"), "runs.json")
+    recent = _recent(day, now, DAY_S)
+    if last > now or _ahead(day, now):
+        data[action_id] = {"day": recent, "last": min(last, now)}
+        _save(ctx, "runs.json", data)
+    return data, recent, min(last, now)
 
 
 def limit_reason(ctx, entry):
     """None when the action may run now, else "max-per-day" or "min-gap" (entry: id, max_per_day, min_gap_s)."""
     now = ctx.now()
-    day, last = _runs(ctx, entry.id)
-    if len([t for t in day if now - t < DAY_S]) >= entry.max_per_day:
+    _, day, last = _runs(ctx, entry.id, now)
+    if len(day) >= entry.max_per_day:
         return "max-per-day"
     if last is not None and now - last < entry.min_gap_s:
         return "min-gap"
@@ -351,21 +446,20 @@ def limit_reason(ctx, entry):
 def note_run(ctx, action_id):
     """Count one run of an action now (the last time is kept apart, so a gap longer than a day still holds)."""
     now = ctx.now()
-    data = _read(ctx, "runs.json") or {}
-    day, _ = _runs(ctx, action_id)
-    data[action_id] = {"day": [t for t in day if now - t < DAY_S] + [now], "last": now}
+    data, day, _ = _runs(ctx, action_id, now)
+    data[action_id] = {"day": day + [now], "last": now}
     _save(ctx, "runs.json", data)
 
 
 # --- the lock ------------------------------------------------------------------------------------------------------
 
-def _flock(ctx, name, why, busy=Busy):
-    """Open lib/<name> and take its flock, waiting at most ctx.lock_wait_s, then raise busy(why) (Busy, or NonceBusy for
-    the nonce lock); returns the fd, whose close releases the lock."""
+def _flock(ctx, name, why, busy=Busy, wait_s=None):
+    """Open lib/<name> and take its flock, waiting at most wait_s (None: ctx.lock_wait_s), then raise busy(why) (Busy,
+    or NonceBusy for the nonce lock); returns the fd, whose close releases the lock."""
     import fcntl
     fd = os.open(ctx.lib / name, os.O_RDWR | os.O_CREAT | _NOFOLLOW | _CLOEXEC, 0o600)
     try:
-        deadline = time.monotonic() + ctx.lock_wait_s
+        deadline = time.monotonic() + (ctx.lock_wait_s if wait_s is None else wait_s)
         while True:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -387,6 +481,45 @@ def lock(ctx):
         yield
     finally:
         os.close(fd)   # closing the handle releases the lock
+
+
+@contextlib.contextmanager
+def busy_lock(ctx, wait=True):
+    """Hold lib/busy-lock (flock), yielding True, or yield False when it is held elsewhere: waiting at most
+    ctx.lock_wait_s, or not at all when wait is False. The runner's start that found lib/lock busy holds it while it
+    takes and answers its busy-* entries in work/; leftovers (under lib/lock) try it without waiting and leave busy-*
+    entries alone when it is held, so a boot never quarantines an entry a busy start still answers (re-check notes,
+    item 4). A process that dies releases it. Taken after lib/lock or without it, before the write lock and the nonce
+    lock, never while either is held. Windows (tests only): holds nothing, yields True."""
+    if os.name != "posix":
+        yield True
+        return
+    try:
+        fd = _flock(ctx, BUSY_LOCK, "a start that found lib/lock busy holds the busy lock", wait_s=None if wait else 0)
+    except Busy:
+        fd = None
+    try:
+        yield fd is not None
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+@contextlib.contextmanager
+def write_lock(ctx):
+    """Hold lib/write-lock (flock) for one write of logs.py (an append to the run log, whose chain reads the last
+    line; one result file; one attention line with its window) or one slot of the hourly cap (open_slot). A few file
+    operations, never a whole start, so the runner's start that found lib/lock busy (Z2b) writes its lines and takes
+    its slots under it while another start holds lib/lock. Taken after lib/lock, never before it, and never while the
+    nonce lock is held. Windows (tests only): holds nothing."""
+    if os.name != "posix":
+        yield
+        return
+    fd = _flock(ctx, WRITE_LOCK, "another call holds the write lock", WriteBusy)
+    try:
+        yield
+    finally:
+        os.close(fd)
 
 
 @contextlib.contextmanager

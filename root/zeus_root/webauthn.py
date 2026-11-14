@@ -31,6 +31,11 @@ The order of the checks is the plan's D10 as amended after the Z2a hostile revie
   counted and never a buzz (6.3 M1). `used-nonce` is decided here and only here, so a record refused for an earlier
   fault keeps that reason (a forgery stays counted even with a spent nonce), and a record that gets past this point is
   the first answer for its nonce;
+- then a record older than the last one root accepted with the same key (its signed exp is not later): a try the gate
+  held back while the owner pressed again, refused quietly (plan v6, item 13; not counted, no buzz), so it can neither
+  run a second time with a passkey that keeps its counter at 0 nor raise a false "copied" with one that counts. That
+  holds while the gate issues exp in order (root alone cannot order two presses); the key page's own check of the
+  last exp it signed with each key (Z4, contract 8b) makes it hold whatever the gate does;
 - only then the counter and the BE flag (a genuine, fresh, never-seen record whose counter did not go up is a sign of
   a copied key), then the list (a yes given before the list changed).
 
@@ -72,6 +77,9 @@ REFUSALS = {
                    "This key's backup setting changed since it was registered, so it may have been copied. Nothing ran."),
     "expired": ("not-counted", None, "The request was too old or dated ahead; try again. Nothing ran."),
     "used-nonce": ("not-counted", None, "This request was already answered once. Nothing ran again."),
+    "older-than-last": ("not-counted", None,
+                        "A newer request signed with this key was already accepted, so this older one was not. "
+                        "Nothing ran."),
     "list-changed": ("other", "list-changed", "The list of actions changed after you tapped; open it again. Nothing ran."),
 }
 
@@ -196,10 +204,11 @@ def _shape(rec):
     return raw
 
 
-def verify(rec, keys, cfg, list_sha, now, counter, spend):
+def verify(rec, keys, cfg, list_sha, now, counter, spend, last_exp=None):
     """Check one run or check-key record (D10, amended). keys: registered keys by ref; cfg: config.Config; list_sha:
     the installed actions.json's sha256 hex; now: unix seconds; counter: the key's stored sign counter (None before its
-    first use, read as 0); spend(nonce, exp) -> bool: marks the nonce used and says whether this was the first time
+    first use, read as 0); last_exp: the signed exp of the last record root accepted with that key (None before one;
+    a record whose exp is not later is refused `older-than-last` right after the nonce); spend(nonce, exp) -> bool: marks the nonce used and says whether this was the first time
     (the runner passes state.spend_nonce bound to its ctx); every spend keeps the nonce until at least a day after now,
     and until a day after exp when exp is still ahead of now (a record past its exp is never fresh again; the file time
     stops at 2^32), moving a nonce already kept forward, never back. exp is the record's exp once the signature has
@@ -235,14 +244,26 @@ def verify(rec, keys, cfg, list_sha, now, counter, spend):
             first = spend(nonce, signed_exp)
         return first
     try:
-        return _checks(rec, keys, cfg, list_sha, now, counter, spend_once, signed)
+        return _checks(rec, keys, cfg, list_sha, now, counter, last_exp, spend_once, signed)
     finally:
         spend_once()
 
 
-def _checks(rec, keys, cfg, list_sha, now, counter, spend_once, signed):
-    """verify()'s checks in their order; spend_once() spends the record's nonce (once) and says if it was unspent;
-    signed(exp) is called once the signature checked out, with the exp it covers."""
+def signed_exp(rec, keys, cfg):
+    """For a record the runner refuses busy at lib/lock (Z2b, plan v6): the record's exp when verify()'s steps 1-5
+    (shape, key and device, client data, RP ID hash, UP and UV, the signature) all pass, else None. Spends nothing and
+    reads no clock: the runner spends the nonce itself with this exp, as verify() would once the signature checked
+    out. Never raises for a bad record (a Refusal or Malformed is None)."""
+    try:
+        _to_signature(rec, keys, cfg)
+    except (Refusal, canon.Malformed):
+        return None
+    return rec["exp"]
+
+
+def _to_signature(rec, keys, cfg):
+    """verify()'s steps 1-5, up to and including the signature: (raw fields, auth data, root's challenge, the key).
+    Raises Refusal or canon.Malformed."""
     raw = _shape(rec)
     auth = parse_auth_get(raw["authenticatorData"])
     # root's own challenge, from the record's fields and root's own origin (never one from the record)
@@ -280,6 +301,13 @@ def _checks(rec, keys, cfg, list_sha, now, counter, spend_once, signed):
     # 5. the signature, before anything that could say "copied"
     if not verify_sig(key.alg, key.spki, raw["authenticatorData"], raw["clientDataJSON"], raw["signature"]):
         raise _refuse("signature")
+    return raw, auth, want, key
+
+
+def _checks(rec, keys, cfg, list_sha, now, counter, last_exp, spend_once, signed):
+    """verify()'s checks in their order; spend_once() spends the record's nonce (once) and says if it was unspent;
+    signed(exp) is called once the signature checked out, with the exp it covers."""
+    raw, auth, want, key = _to_signature(rec, keys, cfg)
     signed(rec["exp"])
     # 6. freshness (now < exp <= now + 180), then the nonce: a genuine record sent late or sent again is a resend, not
     #    counted and never a buzz. verify() spends the nonce for every refusal too; only here does its answer decide
@@ -287,6 +315,10 @@ def _checks(rec, keys, cfg, list_sha, now, counter, spend_once, signed):
         raise _refuse("expired")
     if not spend_once():
         raise _refuse("used-nonce")
+    # 6b. a try older than the last one accepted with this key (the gate held it back): quiet, never a buzz. It
+    #     holds while the gate issues exp in order; the key page's own check (Z4) covers a gate that does not
+    if last_exp is not None and rec["exp"] <= last_exp:
+        raise _refuse("older-than-last")
     # 7. the counter (either one not zero and the new one not larger) and the BE flag
     stored = 0 if counter is None else counter
     if (auth.count or stored) and auth.count <= stored:

@@ -1,7 +1,9 @@
 """The run log and its hash chain (contract §8e), the result file (§8d, D5) and the attention lines (§8f, D7, D8).
 
 Every file here is readable by every user on the server (mode 644), so nothing written here may hold a key id, a user
-handle, a public key or a user id: assert_no_ids runs before every write, at any depth. Callers hold state.lock(ctx).
+handle, a public key or a user id: assert_no_ids runs before every write, at any depth. Callers hold state.lock(ctx),
+except the runner's start that found it busy (Z2b); every write here also holds state.write_lock(ctx) for itself, so the
+chain, a result and the attention windows never interleave between the two.
 """
 import hashlib
 import os
@@ -75,6 +77,11 @@ def append_run(ctx, line):
     if not isinstance(line, dict):
         raise ValueError("a log line is an object")
     assert_no_ids(line)
+    with state.write_lock(ctx):
+        _append_run(ctx, line)
+
+
+def _append_run(ctx, line):
     now = ctx.now()
     line = dict(line)
     line.setdefault("t", iso(ctx, now))
@@ -134,6 +141,29 @@ def write_result(ctx, run, **fields):
     if fields.get("class") is not None and fields["class"] not in CLASSES:
         raise ValueError("not a refusal class")
     assert_no_ids(fields)
+    with state.write_lock(ctx):
+        return _write_result(ctx, run, fields)
+
+
+def read_result(ctx, run):
+    """The result of a run as written, or None when there is none (a run id only; raises state.Broken when it does
+    not read back)."""
+    if not isinstance(run, str) or not RUN_RE.fullmatch(run):
+        raise ValueError("not a run id")
+    try:
+        raw = (ctx.run / "results" / (run + ".json")).read_bytes()
+    except FileNotFoundError:
+        return None
+    try:
+        obj = canon.strict_loads(raw)
+    except canon.Malformed:
+        obj = None
+    if not isinstance(obj, dict) or set(obj) != set(RESULT_KEYS):
+        raise state.Broken(run + ".json does not read back")
+    return obj
+
+
+def _write_result(ctx, run, fields):
     path = ctx.run / "results" / (run + ".json")
     old = None
     try:
@@ -167,9 +197,10 @@ def attention(ctx, kind, sentence, run):
         raise ValueError("not a run id")
     if not isinstance(sentence, str) or not sentence.strip():
         raise ValueError("an attention line needs its sentence")
-    write, folded = state.attention_slot(ctx, kind)
-    if not write:
-        return False
-    line = {"folded": folded, "kind": kind, "run": run, "sentence": sentence, "t": iso(ctx, ctx.now())}
-    _append(ctx.log / "attention.jsonl", canon.canonical(line) + b"\n")
+    with state.write_lock(ctx):
+        write, folded = state.attention_slot(ctx, kind)
+        if not write:
+            return False
+        line = {"folded": folded, "kind": kind, "run": run, "sentence": sentence, "t": iso(ctx, ctx.now())}
+        _append(ctx.log / "attention.jsonl", canon.canonical(line) + b"\n")
     return True

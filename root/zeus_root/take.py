@@ -162,9 +162,22 @@ def quarantine(ctx, path, bad, reason="malformed", data=None):
                        % bad.why, None)
 
 
-def quarantine_count(ctx):
-    with os.scandir(ctx.run / "quarantine") as it:
+def quarantine_unopened(ctx, path):
+    """Move a taken entry into run/quarantine/ without opening, reading or logging it: the runner's hourly cap (Z2b,
+    review M1). Every start together opens at most runner.OPEN_PER_HOUR inbox entries an hour; past that, entries wait
+    in quarantine unread and the start writes one line for all of them, so a broken or hostile gate cannot make root
+    spend a nonce file and a log line on each one. Nothing of such an entry is spent or answered."""
+    os.rename(path, ctx.run / "quarantine" / path.name)
+
+
+def count(folder):
+    """How many entries a folder holds (nothing is opened or followed)."""
+    with os.scandir(folder) as it:
         return sum(1 for _ in it)
+
+
+def quarantine_count(ctx):
+    return count(ctx.run / "quarantine")
 
 
 def leftovers(ctx):
