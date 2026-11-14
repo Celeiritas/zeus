@@ -350,14 +350,14 @@ def _leftover(ctx, path, loaded):
         data = take.open_entry(ctx, path)
     except FileNotFoundError:
         return
-        nonce = None
-        if isinstance(data, (bytes, bytearray)):
-            try:
-                obj = canon.strict_loads(data)
-            except Malformed:
-                obj = None
-            if isinstance(obj, dict) and canon.valid_nonce(obj.get("nonce")):
-                nonce = obj["nonce"]
+    nonce = None
+    if isinstance(data, (bytes, bytearray)):
+        try:
+            obj = canon.strict_loads(data)
+        except Malformed:
+            obj = None
+        if isinstance(obj, dict) and canon.valid_nonce(obj.get("nonce")):
+            nonce = obj["nonce"]
     if nonce is not None:
         run = canon.run_id(nonce)
         try:
