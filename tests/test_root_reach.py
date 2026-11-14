@@ -261,6 +261,37 @@ class FinishTest(ReachCase):
                 self.assertEqual([x.get("reach") or x.get("reason") for x in self.lines(run)], [final] + extra)
                 self.assertFalse(self.reach_file(run).exists())
 
+    def test_a_tick_finishes_a_final_file_before_its_deadline(self):
+        """Re-check 2 note 1: a file that says final is finished at the next tick, its deadline not yet passed, so the
+        line a kill left unwritten comes within the minute."""
+        rec, run = self.closed()
+        self.at(120)
+        self.put(self.close.check_in(run))
+        with self.kill_once(logs, "append_run", lambda ctx, line: "reach" in line):
+            with self.assertRaises(Killed):
+                runner.start(self.ctx)
+        self.at(130)
+        self.tick(run)
+        self.check_kept(rec, run)
+
+    def test_a_check_in_after_the_deadline_meets_a_final_file(self):
+        """Re-check 2 note 2: a check-in that comes after the deadline still finishes a file that says final, as it
+        says (root's files broken, so due() leaves it to check_in)."""
+        for final, state_word, extra in (("superseded", "superseded", ["check-in-refused"]), ("kept", "done", [])):
+            with self.subTest(final=final):
+                self.setUp()
+                _, run = self.closed()
+                doc = json.loads(self.reach_file(run).read_bytes())
+                doc["final"] = final
+                state.write_file(self.reach_file(run), json.dumps(doc).encode(), 0o600)
+                os.chmod(self.ctx.etc / "config.json", 0o666)
+                self.at(700)
+                self.put(self.close.check_in(run))
+                self.start()
+                self.assertEqual(logs.read_result(self.ctx, run)["state"], state_word)
+                self.assertEqual([x.get("reach") or x.get("reason") for x in self.lines(run)], [final] + extra)
+                self.assertFalse(self.reach_file(run).exists())
+
     def test_a_check_in_for_a_superseded_finish_is_refused(self):
         """With root's files in order the start's due() finishes the file before the inbox is read, so the check-in
         finds no wait."""
@@ -449,6 +480,25 @@ class BootTest(ReachCase):
         self.at(100)
         self.assertEqual(reach.boot(self.ctx), 0)
         self.assertEqual(self.kinds(), ["watcher-failed"])
+        self.waits(run)
+
+    def test_a_title_that_does_not_open_names_the_run(self):
+        """Re-check 2 note 3: a reach file that fails to open for a watcher-failed title (an OSError, not a file that
+        reads wrong) gives the run id as the title, and boot goes on."""
+        _, run = self.closed()
+        self.ctx.cmd.answers[(SYSTEMCTL, "start", "zeus-root-reach@%s.timer" % run)] = CmdResult(1, "", "failed")
+        real, done = reach._load, []
+
+        def load(path):
+            if not done:
+                done.append(1)
+                raise PermissionError(13, "Permission denied")
+            return real(path)
+        self.at(100)
+        with mock.patch.object(reach, "_load", load):
+            self.assertEqual(reach.boot(self.ctx), 0)
+        self.assertEqual(self.kinds(), ["watcher-failed"])
+        self.assertIn(run, self.attention()[0]["sentence"])
         self.waits(run)
 
     def test_boot_quarantines_leftovers(self):

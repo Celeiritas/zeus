@@ -116,7 +116,8 @@ class ProblemTest(unittest.TestCase):
 
     def test_all_in_order_passes_with_fixed_argv(self):
         self.assertIsNone(serve.problem(self.ctx, self.cfg))
-        self.assertEqual(self.ctx.cmd.calls, [list(SERVE_STATUS), list(SERVE_PREFS), list(SERVE_PID)])
+        self.assertEqual(self.ctx.cmd.calls,
+                         [list(SERVE_STATUS), list(SERVE_PREFS), list(SERVE_PID), list(SERVE_PID)])
 
     def test_no_operator_key_is_no_operator(self):
         self.answer(SERVE_PREFS, out='{"WantRunning":true}')
@@ -183,6 +184,19 @@ class ProblemTest(unittest.TestCase):
                 self.assertEqual(serve.problem(self.ctx, self.cfg), "serve-unreadable")
         serve_ok(self.ctx, self.doc, environ=b"A=" + b"x" * (serve.ENVIRON_MAX - 2))
         self.assertIsNone(serve.problem(self.ctx, self.cfg))
+
+    def test_a_tailscaled_that_restarts_between_the_reads_fails_closed(self):
+        """Re-check note (two reads in S2): MainPID is read again after tailscaled's name and environment; a pid that
+        changed or does not read is serve-unreadable, since the environment read may have been another process's."""
+        real = self.ctx.cmd
+        for second in (CmdResult(0, "4101\n", ""), CmdResult(1, "", ""), CmdResult(0, "", "")):
+            with self.subTest(second=second):
+                answers = iter([CmdResult(0, TAILSCALED_PID + "\n", ""), second])
+
+                def cmd(argv, timeout):
+                    return next(answers) if tuple(argv) == SERVE_PID else real(argv, timeout)
+                self.ctx.cmd = cmd
+                self.assertEqual(serve.problem(self.ctx, self.cfg), "serve-unreadable")
 
     def test_every_reason_is_class_other_with_a_buzz(self):
         """The runner files each of serve's reasons as class other with the attention kind serve-changed."""

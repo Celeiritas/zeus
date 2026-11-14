@@ -545,11 +545,14 @@ class ClockAheadTest(StateCase):
 
     def test_a_flood_line_seen_ahead_does_not_hide_the_next(self):
         self.at(self.AHEAD)
-        self.assertTrue(state.flood_seen(self.ctx))
+        self.assertTrue(state.flood_new(self.ctx))
+        self.assertTrue(state.flood_new(self.ctx))          # a read notes nothing (re-check note 3)
+        state.note_flood(self.ctx)
         self.at(0)
-        self.assertTrue(state.flood_seen(self.ctx))         # long ago, not within the hour
+        self.assertTrue(state.flood_new(self.ctx))          # long ago, not within the hour
+        state.note_flood(self.ctx)
         self.at(10)
-        self.assertFalse(state.flood_seen(self.ctx))
+        self.assertFalse(state.flood_new(self.ctx))
 
     def test_an_attention_window_seen_ahead_writes_the_next_line(self):
         self.at(self.AHEAD)

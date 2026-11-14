@@ -853,6 +853,52 @@ class InboxTest(RunnerCase):
         self.start()
         self.assertEqual(self.result(rec)["state"], "done")
 
+    def test_a_leftover_takes_a_slot_of_the_hourly_cap(self):
+        """Re-check note 2: a leftover is opened within the hourly cap like any entry (each costs a log line and a
+        nonce file); past the cap it waits in work/, unread and unspent, for a start in a later hour."""
+        first = Phone(self.ctx).record()
+        self.put(first, folder="work")
+        for i in range(50):
+            self.put(b"{%d" % i)
+        self.start()
+        self.assertEqual([x["reason"] for x in self.lines()][:2], ["leftover", "malformed"])
+        self.assertEqual(len([x for x in self.lines() if x["reason"] == "malformed"]), 49)
+        self.assertEqual([x["count"] for x in self.lines() if x["reason"] == "open-cap"], [1])
+        self.assertIsNotNone(self.kept_until(first["nonce"]))
+        self.at(10)
+        second = Phone(self.ctx).record()
+        path = self.put(second, folder="work")
+        self.start()
+        self.assertEqual(self.folder("work"), [path.name])
+        self.assertIsNone(self.kept_until(second["nonce"]))
+        self.at(3601)
+        self.start()
+        self.assertEqual(self.folder("work"), [])
+        self.assertIsNotNone(self.kept_until(second["nonce"]))
+        self.assertEqual(len([x for x in self.lines() if x["reason"] == "leftover"]), 2)
+
+    def test_a_flood_line_that_fails_to_write_comes_at_the_next_start(self):
+        """Re-check note 3: a flood is noted only after its line is written, so a line that fails to write (a full
+        disk) comes at the next start that sees a flood, not an hour later."""
+        for i in range(60):
+            self.put(b"{%d" % i)
+        real = logs.attention
+
+        def attention(ctx, kind, sentence, run):
+            if kind == "flood":
+                raise OSError(28, "No space left on device")
+            return real(ctx, kind, sentence, run)
+        with mock.patch.object(logs, "attention", attention):
+            with self.assertRaises(OSError):
+                runner.start(self.ctx)
+        self.assertEqual(self.kinds(), [])
+        self.assertIsNotNone(state.pause_until(self.ctx))
+        self.at(60)
+        for i in range(60):
+            self.put(b"[%d" % i)
+        self.start()
+        self.assertEqual(self.kinds(), ["flood"])
+
 
 class CapTest(RunnerCase):
     """Review M1: the hourly cap counts every entry opened, whatever its answer, in every start (a busy one too), and
@@ -1077,6 +1123,80 @@ class NonceTest(RunnerCase):
         self.assertEqual((res["state"], res["class"]), ("refused", "garbage"))
         self.assertEqual(self.line(short)["reason"], "malformed")
         self.assertAlmostEqual(self.kept_until(short["nonce"]), self.t0, delta=1)
+
+
+class BusyLockTest(RunnerCase):
+    """Re-check note 5: a start that found lib/lock busy holds lib/busy-lock while it answers its own busy-* entries,
+    and leftovers (boot, a later start) leave busy-* entries alone while that lock is held, so a boot that takes
+    lib/lock meanwhile never quarantines an entry the busy start still answers."""
+
+    BUSY = "busy-%020d-000-0123abcd"
+
+    def test_a_boot_during_a_busy_start_leaves_its_entries_alone(self):
+        phone = Phone(self.ctx)
+        recs = [phone.record(), phone.record()]
+        for rec in recs:
+            self.put(rec)
+        real, done = take.open_entry, []
+
+        def open_entry(ctx, path):
+            if not done:
+                done.append(1)
+                runner.leftovers(ctx, None)          # boot holds lib/lock now and looks at work/
+            return real(ctx, path)
+        with self.lock_held(), mock.patch.object(take, "open_entry", open_entry):
+            self.start()
+        self.assertEqual([self.line(rec)["reason"] for rec in recs], ["busy", "busy"])
+        self.assertEqual((self.folder("work"), self.folder("quarantine")), ([], []))
+
+    def test_an_entry_gone_before_the_busy_start_opens_it_is_skipped(self):
+        rec = Phone(self.ctx).record()
+        self.put(rec)
+        real = take.open_entry
+
+        def gone(ctx, path):
+            os.unlink(path)
+            return real(ctx, path)
+        with self.lock_held(), mock.patch.object(take, "open_entry", gone):
+            self.start()
+        self.assertEqual((self.lines(), self.folder("work"), self.folder("quarantine")), ([], [], []))
+
+    def test_an_entry_gone_before_the_busy_start_removes_it_is_answered_once(self):
+        rec = Phone(self.ctx).record()
+        self.put(rec)
+        real = logs.write_result
+
+        def gone(ctx, run, **fields):
+            for p in (ctx.run / "work").iterdir():
+                os.unlink(p)
+            return real(ctx, run, **fields)
+        with self.lock_held(), mock.patch.object(logs, "write_result", gone):
+            self.start()
+        self.assertEqual(self.line(rec)["reason"], "busy")
+        self.assertEqual(self.folder("work"), [])
+
+    def test_leftovers_leave_busy_entries_alone_while_the_busy_lock_is_held(self):
+        rec, other = Phone(self.ctx).record(), Phone(self.ctx).record()
+        busy = self.ctx.run / "work" / (self.BUSY % 1)
+        busy.write_bytes(json.dumps(rec).encode())
+        self.put(other, folder="work")
+        with state.busy_lock(self.ctx):
+            self.start()
+        self.assertEqual(self.folder("work"), [busy.name])
+        self.assertIsNone(self.kept_until(rec["nonce"]))
+        self.assertIsNotNone(self.kept_until(other["nonce"]))
+        self.start()                                 # the lock is free: a busy start that crashed left it
+        self.assertEqual(self.folder("work"), [])
+        self.assertIsNotNone(self.kept_until(rec["nonce"]))
+
+    def test_a_busy_start_that_cannot_take_the_busy_lock_takes_nothing(self):
+        rec = Phone(self.ctx).record()
+        self.put(rec)
+        with self.lock_held(), state.busy_lock(self.ctx):
+            self.start()
+        self.assertEqual((len(self.folder("inbox")), self.folder("work"), self.lines()), (1, [], []))
+        self.start()
+        self.assertEqual(self.result(rec)["state"], "done")
 
 
 class CliTest(RunnerCase):
