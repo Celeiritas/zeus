@@ -26,7 +26,8 @@ from . import canon
 HOUR_S = 3600
 DAY_S = 86400
 NONCE_KEEP_LIMIT = 2 ** 32             # no nonce file time past 2106-02-07 (a record expiring later is never fresh before)
-NONCE_LOCK = "nonce-lock"              # lib/nonce-lock: beside lib/lock, outside nonces/ so a prune never sees it
+NONCE_LOCK = "nonce-lock"
+BUSY_LOCK = "busy-lock"              # lib/nonce-lock: beside lib/lock, outside nonces/ so a prune never sees it
 WRITE_LOCK = "write-lock"              # lib/write-lock: one append to the run log, one result, one attention line
 WINDOWED = ("file-rules", "watcher-failed")   # D8: one line an hour; later ones are folded into the next line
 MAX_KEPT = 100                                 # refusal times kept per class: enough for any "3 in an hour"
@@ -370,15 +371,20 @@ def open_slot(ctx, per_hour):
         return True
 
 
-def flood_seen(ctx):
-    """Note a flood now (the caller holds lib/lock); True when none was seen within the hour before, so this flood
-    writes its line: one line for a flood that lasts, whatever pause is on. A last flood later than now (root's clock
-    ran ahead and was set right) counts as long ago: one line too many, never none (re-check notes, item 1)."""
+def flood_new(ctx):
+    """True when no flood was noted within the hour before now (read only), so this flood writes its line: one line
+    for a flood that lasts, whatever pause is on. A last flood later than now (root's clock ran ahead and was set
+    right) counts as long ago: one line too many, never none (re-check notes, item 1)."""
     now = ctx.now()
     data = _read(ctx, "flood.json")
     last = None if data is None else _number(data.get("last"), "flood.json")
-    _save(ctx, "flood.json", {"last": now})
     return last is None or last > now or now - last >= HOUR_S
+
+
+def note_flood(ctx):
+    """Note a flood now (the caller holds lib/lock). The runner notes it after its line is written, so a line that
+    failed to write (a full disk) comes at the next start that sees a flood (re-check notes, item 3)."""
+    _save(ctx, "flood.json", {"last": ctx.now()})
 
 
 # --- attention windows (D8) ----------------------------------------------------------------------------------------
@@ -447,13 +453,13 @@ def note_run(ctx, action_id):
 
 # --- the lock ------------------------------------------------------------------------------------------------------
 
-def _flock(ctx, name, why, busy=Busy):
-    """Open lib/<name> and take its flock, waiting at most ctx.lock_wait_s, then raise busy(why) (Busy, or NonceBusy for
-    the nonce lock); returns the fd, whose close releases the lock."""
+def _flock(ctx, name, why, busy=Busy, wait_s=None):
+    """Open lib/<name> and take its flock, waiting at most wait_s (None: ctx.lock_wait_s), then raise busy(why) (Busy,
+    or NonceBusy for the nonce lock); returns the fd, whose close releases the lock."""
     import fcntl
     fd = os.open(ctx.lib / name, os.O_RDWR | os.O_CREAT | _NOFOLLOW | _CLOEXEC, 0o600)
     try:
-        deadline = time.monotonic() + ctx.lock_wait_s
+        deadline = time.monotonic() + (ctx.lock_wait_s if wait_s is None else wait_s)
         while True:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -475,6 +481,28 @@ def lock(ctx):
         yield
     finally:
         os.close(fd)   # closing the handle releases the lock
+
+
+@contextlib.contextmanager
+def busy_lock(ctx, wait=True):
+    """Hold lib/busy-lock (flock), yielding True, or yield False when it is held elsewhere: waiting at most
+    ctx.lock_wait_s, or not at all when wait is False. The runner's start that found lib/lock busy holds it while it
+    takes and answers its busy-* entries in work/; leftovers (under lib/lock) try it without waiting and leave busy-*
+    entries alone when it is held, so a boot never quarantines an entry a busy start still answers (re-check notes,
+    item 4). A process that dies releases it. Taken after lib/lock or without it, before the write lock and the nonce
+    lock, never while either is held. Windows (tests only): holds nothing, yields True."""
+    if os.name != "posix":
+        yield True
+        return
+    try:
+        fd = _flock(ctx, BUSY_LOCK, "a start that found lib/lock busy holds the busy lock", wait_s=None if wait else 0)
+    except Busy:
+        fd = None
+    try:
+        yield fd is not None
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
 @contextlib.contextmanager

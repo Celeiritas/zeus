@@ -99,7 +99,8 @@ def _read(path, limit):
 def cert_uid_problem(ctx):
     """None when tailscaled, as it runs, has no TS_PERMIT_CERT_UID in its environment; "cert-uid-set" when it has;
     "serve-unreadable" when that cannot be read: no main process, a pid whose name is not tailscaled (it restarted in
-    between), an environment that does not read or is over 1 MB."""
+    between), an environment that does not read or is over 1 MB, or a MainPID that does not read the same again after
+    the reads of /proc (tailscaled restarted and its pid was reused in between: re-check notes, item 5)."""
     res = ctx.cmd(MAIN_PID, TIMEOUT_S)
     pid = res.out.strip() if res.code == 0 else ""
     if not re.fullmatch(r"[1-9][0-9]{0,9}", pid):
@@ -108,6 +109,9 @@ def cert_uid_problem(ctx):
     comm = _read(folder / "comm", 64)
     environ = _read(folder / "environ", ENVIRON_MAX + 1)
     if comm is None or comm.rstrip(b"\n") != b"tailscaled" or environ is None or len(environ) > ENVIRON_MAX:
+        return "serve-unreadable"
+    again = ctx.cmd(MAIN_PID, TIMEOUT_S)
+    if again.code != 0 or again.out.strip() != pid:
         return "serve-unreadable"
     if any(var.startswith(b"TS_PERMIT_CERT_UID=") for var in environ.split(b"\0")):
         return "cert-uid-set"

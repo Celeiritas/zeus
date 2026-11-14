@@ -292,10 +292,11 @@ def tick(ctx, run):
 
 
 def _title_of(ctx, loaded, run):
-    """The action's title for a run's wait, or the run id when its file does not read back (or is gone)."""
+    """The action's title for a run's wait, or the run id when its file does not read back, does not open (an OSError:
+    re-check 2, note 3) or is gone."""
     try:
         doc = _load(_path(ctx, run))
-    except state.Broken:
+    except (state.Broken, OSError):
         doc = None
     return _title(loaded, doc["action"]) if doc is not None else run
 

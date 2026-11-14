@@ -4,11 +4,14 @@ A start, under lib/lock:
 1. root's own files first (the file rules of design §16.3, then config.json, actions.json and keys.json): when one is
    wrong, nothing runs in this start, not even a put-back, and every record taken is refused `root-files`;
 2. reach deadlines that passed without a tick (a lost timer) are put back (reach.due);
-3. leftovers in work/ (a crashed start) go to quarantine, their nonce spent if readable, never re-run;
+3. leftovers in work/ (a crashed start) go to quarantine, their nonce spent if readable, never re-run; each takes a
+   slot of the hourly cap first (past it, it waits in work/ for a later hour), and a busy start's busy-* entries are
+   left alone while it holds lib/busy-lock;
 4. spent nonces older than their keep are pruned;
 5. at most 50 inbox entries are taken (take.take); more than 50 waiting or more than 200 in quarantine is a flood:
    root changes pause for an hour, and one `flood` attention line is written unless a flood was already seen within
-   the hour before (state.flood_seen), whatever pause is on: one line for a flood that lasts (D9, review N2);
+   the hour before (state.flood_new), whatever pause is on: one line for a flood that lasts (D9, review N2); the
+   flood is noted (state.note_flood) only after its line is written, so a line that failed comes at the next start;
 6. each entry: the hourly cap (state.open_slot: every start together, the busy one included, opens at most 50 inbox
    entries an hour; past it an entry goes to quarantine unopened, and the start writes one `open-cap` line for all of
    them: review M1), the file rules of the entry, the strict parse (both quarantine, spending nothing and answering
@@ -23,9 +26,11 @@ that it checks each record up to and including its signature (plan v6, Dax 2026-
 spends the nonce with the signed exp when the signature checked out, else with none: a record root refused busy can
 never run later when sent again as it was. It writes its lines under state.write_lock only, and touches no state but
 the nonces, the hourly cap and quarantine. zeus-root-run.service is a oneshot, so two run starts never overlap; a
-busy start overlaps only reach-tick, boot or a command. Boot quarantines whatever it finds in work/, so a boot that
-takes lib/lock while a busy start still answers its own entries can quarantine one of them too (re-check note 5,
-for Z3): never a run, at worst two answers for one entry and a busy start that fails.
+busy start overlaps only reach-tick, boot or a command. It holds lib/busy-lock while it takes and answers its entries
+(waiting at most ctx.lock_wait_s for it, else taking nothing), and leftovers leave busy-* entries in work/ while that
+lock is held, so a boot that takes lib/lock meanwhile never quarantines an entry the busy start still answers; an
+entry gone meanwhile is skipped (re-check notes, item 4). A busy start that dies releases the lock, and what it left
+in work/ is a leftover for the next start.
 
 Every refusal is one run-log line with its reason and class (contract §8e) and, when its record names a run, a
 `refused` result written after its nonce was spent. A spend that fails (state.NonceBusy, state.Broken, any OSError)
@@ -312,13 +317,14 @@ def _flood(ctx, taken):
     in_quarantine = take.quarantine_count(ctx)
     if taken.left == 0 and in_quarantine <= take.FLOOD_QUARANTINE:
         return
-    new = state.flood_seen(ctx)
+    new = state.flood_new(ctx)
     state.set_pause(ctx, ctx.now() + HOUR_S, "flood")
     if new:
         paused = ("stay paused until you resume them" if state.pause_until(ctx) == "owner"
                   else "are paused for an hour")
         logs.attention(ctx, "flood", "Zeus's inbox was flooded (%d waiting, %d in quarantine); root changes %s"
                        % (len(taken.paths) + taken.left, in_quarantine, paused), None)
+    state.note_flood(ctx)        # after the line: a line that failed to write comes at the next start (item 3)
 
 
 def leftovers(ctx, loaded):
@@ -326,12 +332,24 @@ def leftovers(ctx, loaded):
     it reads as a record with a canonical nonce (exp None: its signature is not checked), a result that still says
     running becomes failed (the change may be half done; nothing is put back), and it goes to quarantine, never
     re-run. A spend that fails is logged and the entry is quarantined anyway. loaded (None when root's files are
-    broken) gives the crashed sentence its title."""
-    for path in take.leftovers(ctx):
-        try:
-            data = take.open_entry(ctx, path)
-        except FileNotFoundError:     # handled meanwhile by a start that found lib/lock busy
-            continue
+    broken) gives the crashed sentence its title. Each leftover takes a slot of the hourly cap first, as every opened
+    entry does (re-check notes, item 2); past it, it and the rest wait in work/, unread and unspent, for a start in a
+    later hour. While a start that found lib/lock busy holds lib/busy-lock, its busy-* entries are its own, not
+    leftovers (item 4)."""
+    with state.busy_lock(ctx, wait=False) as free:
+        for path in take.leftovers(ctx):
+            if not free and path.name.startswith("busy-"):
+                continue
+            if not state.open_slot(ctx, OPEN_PER_HOUR):
+                break
+            _leftover(ctx, path, loaded)
+
+
+def _leftover(ctx, path, loaded):
+    try:
+        data = take.open_entry(ctx, path)
+    except FileNotFoundError:
+        return
         nonce = None
         if isinstance(data, (bytes, bytearray)):
             try:
@@ -340,18 +358,18 @@ def leftovers(ctx, loaded):
                 obj = None
             if isinstance(obj, dict) and canon.valid_nonce(obj.get("nonce")):
                 nonce = obj["nonce"]
-        if nonce is not None:
-            run = canon.run_id(nonce)
-            try:
-                state.spend_nonce(ctx, nonce, None)
-            except (state.Busy, state.Broken, OSError) as e:
-                logs.append_run(ctx, {"run": run, "outcome": "refused", "class": "other", "reason": "nonce-store",
-                                      "error": type(e).__name__})
-            _crashed_result(ctx, run, loaded)
+    if nonce is not None:
+        run = canon.run_id(nonce)
         try:
-            take.quarantine(ctx, path, None, "leftover")
-        except FileNotFoundError:
-            continue
+            state.spend_nonce(ctx, nonce, None)
+        except (state.Busy, state.Broken, OSError) as e:
+            logs.append_run(ctx, {"run": run, "outcome": "refused", "class": "other", "reason": "nonce-store",
+                                  "error": type(e).__name__})
+        _crashed_result(ctx, run, loaded)
+    try:
+        take.quarantine(ctx, path, None, "leftover")
+    except FileNotFoundError:
+        return
 
 
 def _crashed_result(ctx, run, loaded):
@@ -620,17 +638,29 @@ def _busy_start(ctx):
     quarantined unopened with one `open-cap` line). The file rules and the strict parse still quarantine; a check-in
     is refused busy (the key page sends it again); a run or check-key record is checked up to its signature
     (webauthn.signed_exp) when root's files are in order, its nonce spent with that exp or none, then refused busy.
-    Touches no state but the nonces, the hourly cap, the readable files of logs.py and quarantine."""
+    Touches no state but the nonces, the hourly cap, the readable files of logs.py and quarantine. Holds lib/busy-lock
+    from the take to the last answer, so leftovers leave its entries alone (re-check notes, item 4); when the lock
+    does not come within ctx.lock_wait_s it takes nothing. An entry gone meanwhile is skipped."""
     inbox = ctx.run / "inbox"
     if take.count(inbox) > take.TAKE_LIMIT or take.quarantine_count(ctx) > take.FLOOD_QUARANTINE:
         return 0
+    with state.busy_lock(ctx) as held:
+        if held:
+            _answer_busy(ctx, inbox)
+    return 0
+
+
+def _answer_busy(ctx, inbox):
     loaded, problem = load_or_problem(ctx)
     s = _Start(ctx, loaded, problem)
     taken = take.take(ctx, inbox, "busy")
     for path in taken.paths:
         if not _opened(s, path):
             continue
-        data = take.open_entry(ctx, path)
+        try:
+            data = take.open_entry(ctx, path)
+        except FileNotFoundError:
+            continue
         if isinstance(data, take.Bad):
             take.quarantine(ctx, path, data)
             continue
@@ -643,7 +673,7 @@ def _busy_start(ctx):
         if rec["type"] == "reach":
             logs.append_run(ctx, {"run": rec["run"], "outcome": "refused", "reason": r.reason, "class": r.cls,
                                   "seen": _seen(rec)})
-            os.unlink(path)
+            _unlink(path)
             continue
         run = canon.run_id(rec["nonce"])
         exp = webauthn.signed_exp(rec, loaded.keys, loaded.cfg) if loaded is not None else None
@@ -657,6 +687,12 @@ def _busy_start(ctx):
         logs.append_run(ctx, line)
         logs.write_result(ctx, run, action=rec["action"], state="refused", sentence=r.sentence,
                           **{"class": r.cls})
-        os.unlink(path)
+        _unlink(path)
     _cap_line(ctx, s.over_cap)
-    return 0
+
+
+def _unlink(path):
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
